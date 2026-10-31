@@ -221,7 +221,8 @@ class PreCacheEngine(
     ) {
         val job = currentCoroutineContext()[Job]
         val position = segment.byteRangeOffset ?: 0L
-        val length = segment.byteRangeLength ?: C.LENGTH_UNSET
+        // C.LENGTH_UNSET is an int; DataSpec.Builder wants a Long.
+        val length: Long = segment.byteRangeLength ?: C.LENGTH_UNSET.toLong()
 
         val dataSpec = DataSpec.Builder()
             .setUri(segment.url)
@@ -246,7 +247,7 @@ class PreCacheEngine(
             cache = cache,
             key = segment.url,
             position = segment.byteRangeOffset ?: 0L,
-            length = segment.byteRangeLength ?: C.LENGTH_UNSET,
+            length = segment.byteRangeLength ?: C.LENGTH_UNSET.toLong(),
         )
     }
 
