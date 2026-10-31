@@ -42,7 +42,8 @@ android {
 
     defaultConfig {
         applicationId = "com.streambuddy.app"
-        minSdk = 24
+        // 26 is the floor set by libtorrent's prebuilt native library (Android 8.0, 2017).
+        minSdk = 26
         // Play requires targeting a recent API level; 35 is also enforced edge-to-edge.
         targetSdk = 35
         versionCode = 1

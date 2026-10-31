@@ -114,7 +114,7 @@ total size.
 ## Build
 
 Requirements: JDK 17, Android SDK Platform 35 + Build-Tools 35
-(`compileSdk = 35`, `targetSdk = 34`, `minSdk = 24`).
+(`compileSdk = 35`, `targetSdk = 35`, `minSdk = 26` — libtorrent's native library sets the floor).
 
 ```bash
 # 1. Point Gradle at your SDK (Android Studio does this for you).
