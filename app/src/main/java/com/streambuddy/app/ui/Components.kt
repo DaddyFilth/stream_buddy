@@ -19,7 +19,7 @@ import com.streambuddy.app.stream.CacheState
 
 /** Heading used at the top of every tab. */
 @Composable
-fun SectionHeader(title: String, subtitle: String? = null, modifier: Modifier = Modifier) {
+fun SectionHeader(title: String, modifier: Modifier = Modifier, subtitle: String? = null) {
     Column(modifier = modifier.fillMaxWidth()) {
         Text(text = title, style = MaterialTheme.typography.headlineSmall)
         if (!subtitle.isNullOrBlank()) {

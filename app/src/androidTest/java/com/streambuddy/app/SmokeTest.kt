@@ -9,7 +9,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.streambuddy.app.cache.CacheManager
 import com.streambuddy.app.data.AppDb
+import com.streambuddy.app.data.StreamEntity
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -35,10 +38,15 @@ class SmokeTest {
     }
 
     @Test
-    fun databaseIsUsable() {
+    fun databaseIsUsable() = runBlocking {
         val dao = AppDb.get(context).streams()
-        // Touch the DAO so a missing schema or a broken migration fails here, not in the UI.
-        assertEquals(0, dao.allOnce().count { it.title.startsWith("smoke-test-") })
+        val id = dao.insert(StreamEntity(title = "smoke-test-row", url = "https://example.com/x.m3u8"))
+        // A write plus a read: a missing schema or broken migration fails here, not in the UI.
+        val stored = dao.findById(id)
+        assertNotNull(stored)
+        assertEquals("smoke-test-row", stored!!.title)
+        dao.deleteById(id)
+        assertEquals(null, dao.findById(id))
     }
 
     @Test
