@@ -46,6 +46,7 @@ import com.streambuddy.app.ui.PlayerScreen
 import com.streambuddy.app.ui.QueueScreen
 import com.streambuddy.app.ui.SettingsScreen
 import com.streambuddy.app.ui.StreamBuddyTheme
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {

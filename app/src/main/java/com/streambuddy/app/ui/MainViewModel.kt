@@ -22,15 +22,7 @@ import com.streambuddy.app.stream.StreamKind
 import com.streambuddy.app.stream.StreamUrl
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.SharingStarted
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -51,7 +43,7 @@ data class PlaybackUiState(
 }
 
 /**
- * Single activity-scoped view model: owns the queue flow, the ExoPlayer instance and settings,
+ * Single activity-scoped view model: owns the queue flow, the ExoPlayer instance and the settings,
  * so playback survives tab switches and configuration changes.
  */
 @androidx.annotation.OptIn(UnstableApi::class)
@@ -74,9 +66,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
-    /** Cache-first ExoPlayer: cached segments are served from disk, misses are cached on the fly. */
+    /**
+     * Cache-first player. Every data source request goes through [CacheManager], so audio and video
+     * the pre-cache job already fetched play straight from disk and anything missing is fetched and
+     * written back as it plays.
+     */
     val player: ExoPlayer = ExoPlayer.Builder(app)
-        .setMediaSourceFactory(DefaultMediaSourceFactory(CacheManager.playbackDataSource(app)))
+        .setMediaSourceFactory(DefaultMediaSourceFactory(CacheManager.cacheDataSource(app)))
         .setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus = */ true)
         .setHandleAudioBecomingNoisy(true)
         .build()
@@ -101,6 +97,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             },
         )
 
+        // ExoPlayer has no position callback, so poll while something is loaded.
         viewModelScope.launch {
             while (isActive) {
                 if (player.playbackState != Player.STATE_IDLE) {
@@ -120,32 +117,25 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     // region queue
 
-    /** Validates and enqueues a stream. Returns `false` when the URL was rejected. */
-    fun addStream(rawUrl: String, rawTitle: String): Boolean {
-        return when (val result = StreamUrl.validate(rawUrl)) {
-            is StreamUrl.Result.Invalid -> {
-                post(result.message)
-                false
-            }
-
-            is StreamUrl.Result.Valid -> {
-                viewModelScope.launch {
-                    val title = rawTitle.trim().ifBlank {
-                        StreamUrl.suggestTitle(result.url).ifBlank { "Untitled stream" }
-                    }
-                    val id = dao.insert(
-                        StreamEntity(
-                            title = title,
-                            url = result.url,
-                            kind = result.kind.name,
-                            state = CacheState.QUEUED.name,
-                            prefetchMillis = settings.value.prefetchMillis,
-                        ),
-                    )
-                    PreCacheWorker.enqueue(app, id)
-                    post("Queued “$title” for pre-play")
+    /** Validates and enqueues a stream, then starts pre-caching it. */
+    fun addStream(rawUrl: String, rawTitle: String) {
+        when (val result = StreamUrl.validate(rawUrl)) {
+            is StreamUrl.Result.Invalid -> post(result.message)
+            is StreamUrl.Result.Valid -> viewModelScope.launch {
+                val title = rawTitle.trim().ifBlank {
+                    StreamUrl.suggestTitle(result.url).ifBlank { "Untitled stream" }
                 }
-                true
+                val id = dao.insert(
+                    StreamEntity(
+                        title = title,
+                        url = result.url,
+                        kind = result.kind.name,
+                        state = CacheState.QUEUED.name,
+                        prefetchMillis = settings.value.prefetchMillis,
+                    ),
+                )
+                PreCacheWorker.enqueue(app, id)
+                post("Queued “$title” for pre-play")
             }
         }
     }
@@ -209,6 +199,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun togglePlayPause() {
+        if (!_playback.value.hasMedia) return
         if (player.isPlaying) {
             player.pause()
         } else {
@@ -227,22 +218,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         _playback.value = PlaybackUiState()
     }
 
-    fun seekTo(positionMs: Long) {
-        if (_playback.value.hasMedia) player.seekTo(positionMs.coerceAtLeast(0L))
-    }
-
     // endregion
 
     // region settings & cache
 
     fun setPrefetchMinutes(minutes: Int) = settingsRepository.setPrefetchMinutes(minutes)
 
-    fun setPreferHighestQuality(preferHighest: Boolean) =
-        settingsRepository.setPreferHighestQuality(preferHighest)
+    fun setPreferHighestQuality(preferHighestQuality: Boolean) =
+        settingsRepository.setPreferHighestQuality(preferHighestQuality)
 
     fun refreshCacheUsage() {
         viewModelScope.launch {
-            _cacheBytes.value = withContext(Dispatchers.IO) { CacheManager.usageBytes(app) }
+            val bytes = withContext(Dispatchers.IO) { CacheManager.usageBytes(app) }
+            _cacheBytes.value = bytes
         }
     }
 

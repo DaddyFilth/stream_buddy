@@ -64,8 +64,8 @@ fun QueueScreen(
         item {
             SectionHeader(
                 title = "Pre-play queue",
-                subtitle = "Add an HLS playlist (.m3u8) or a media file and Stream Buddy " +
-                    "caches the start of it, so playback begins instantly.",
+                subtitle = "Add an HLS playlist (.m3u8) or a media file and Stream Buddy caches " +
+                    "the start of it, so playback begins instantly.",
             )
         }
 
@@ -92,10 +92,9 @@ fun QueueScreen(
                     )
                     Button(
                         onClick = {
-                            if (viewModel.addStream(url, title)) {
-                                url = ""
-                                title = ""
-                            }
+                            viewModel.addStream(url, title)
+                            url = ""
+                            title = ""
                         },
                         enabled = url.isNotBlank(),
                         modifier = Modifier.fillMaxWidth(),

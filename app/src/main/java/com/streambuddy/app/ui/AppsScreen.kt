@@ -35,7 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Lists launchable apps, putting streaming services first.
+ * Lists the apps the user can open on this device, streaming services first.
  *
  * Netflix, Disney+, Prime Video and friends can only play DRM-protected content inside their own
  * app, so Stream Buddy launches them rather than trying to cache their streams.
@@ -70,9 +70,9 @@ fun AppsScreen(onMessage: (String) -> Unit, modifier: Modifier = Modifier) {
     ) {
         item {
             SectionHeader(
-                title = "Apps on this device",
-                subtitle = "Streaming services are listed first. Tap to open — DRM services " +
-                    "only play inside their own app, so their streams can't be pre-cached here.",
+                title = "Streaming apps",
+                subtitle = "Tap to open. DRM services only stream inside their own app, so their " +
+                    "media can't be pre-cached here.",
             )
         }
 

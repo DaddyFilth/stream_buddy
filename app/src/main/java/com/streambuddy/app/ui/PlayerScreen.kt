@@ -6,12 +6,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -41,8 +41,8 @@ import com.streambuddy.app.data.StreamEntity
 import com.streambuddy.app.util.Format
 
 /**
- * Cache-first playback: the ExoPlayer instance in [MainViewModel] reads through the same
- * [com.streambuddy.app.cache.CacheManager] store that pre-caching fills.
+ * Cache-first playback (the ExoPlayer instance in [MainViewModel] reads through the same store that
+ * pre-caching fills) plus a shortcut list of everything in the queue.
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
@@ -58,8 +58,8 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         item {
             SectionHeader(
                 title = "Player",
-                subtitle = "Cached segments play from disk; anything not cached yet streams " +
-                    "normally and is cached as it goes.",
+                subtitle = "Anything that was pre-cached starts from disk; the rest streams and is " +
+                    "cached as it plays.",
             )
         }
 
@@ -81,10 +81,10 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                         .background(Color.Black),
                 )
             } else {
-                ElevatedCard(modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f)) {
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
                     EmptyState(
                         title = "Nothing playing",
-                        detail = "Pick a stream below, or tap Play on a queue entry.",
+                        detail = "Pick a stream below, or press Play on an entry in the Queue tab.",
                     )
                 }
             }
@@ -92,18 +92,11 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
 
         if (playback.hasMedia) {
             item {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         text = playback.title,
                         style = MaterialTheme.typography.titleMedium,
                         maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        text = playback.url,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
@@ -120,17 +113,26 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    playback.error?.let { error ->
+                        Text(
+                            text = error,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
             }
 
-            playback.error?.let { error ->
-                item {
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
+            item {
+                val fraction = if (playback.durationMs > 0L) {
+                    (playback.positionMs.toFloat() / playback.durationMs.toFloat()).coerceIn(0f, 1f)
+                } else {
+                    0f
                 }
+                LinearProgressIndicator(
+                    progress = { fraction },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             item {
@@ -142,38 +144,31 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                         Icon(
                             imageVector = Icons.Filled.PlayArrow,
                             contentDescription = null,
-                            modifier = Modifier.width(18.dp).height(18.dp),
+                            modifier = Modifier.size(18.dp),
                         )
-                        Spacer(Modifier.width(6.dp))
-                        Text(if (playback.isPlaying) "Pause" else "Play")
+                        Text(
+                            text = if (playback.isPlaying) "Pause" else "Play",
+                            modifier = Modifier.padding(start = 6.dp),
+                        )
                     }
                     OutlinedButton(onClick = viewModel::stopPlayback) { Text("Stop") }
-                }
-            }
-
-            if (playback.durationMs > 0L) {
-                item {
-                    LinearProgressIndicator(
-                        progress = {
-                            (playback.positionMs.toFloat() / playback.durationMs.toFloat())
-                                .coerceIn(0f, 1f)
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                 }
             }
         }
 
         item {
-            Spacer(Modifier.height(4.dp))
-            Text("From your queue", style = MaterialTheme.typography.titleMedium)
+            Text(
+                text = "From your queue",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(top = 8.dp),
+            )
         }
 
         if (streams.isEmpty()) {
             item {
                 EmptyState(
                     title = "Queue is empty",
-                    detail = "Add a stream on the Queue tab and it will show up here.",
+                    detail = "Add a stream on the Queue tab and it shows up here.",
                 )
             }
         } else {

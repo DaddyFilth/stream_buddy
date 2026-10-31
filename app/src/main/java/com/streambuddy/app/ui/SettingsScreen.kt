@@ -10,10 +10,12 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalButton
@@ -39,6 +41,7 @@ import com.streambuddy.app.cache.CacheManager
 import com.streambuddy.app.data.AppSettings
 import com.streambuddy.app.util.Format
 
+/** Pre-play window, cache budget/usage, notification permission and app info. */
 @Composable
 fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
@@ -68,7 +71,7 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
         item {
             SectionHeader(
                 title = "Settings & boost",
-                subtitle = "Caching is cache-first: everything you play also warms the cache.",
+                subtitle = "Pre-caching is cache-first: everything you play also warms the cache.",
             )
         }
 
@@ -84,17 +87,16 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         rowMinutes.forEach { minutes ->
                             val selected = settings.prefetchMinutes == minutes
-                            val label = "$minutes min"
                             if (selected) {
                                 FilledTonalButton(
                                     onClick = { viewModel.setPrefetchMinutes(minutes) },
                                     modifier = Modifier.weight(1f),
-                                ) { Text(label) }
+                                ) { Text("$minutes min") }
                             } else {
                                 OutlinedButton(
                                     onClick = { viewModel.setPrefetchMinutes(minutes) },
                                     modifier = Modifier.weight(1f),
-                                ) { Text(label) }
+                                ) { Text("$minutes min") }
                             }
                         }
                     }
@@ -259,9 +261,5 @@ private fun openNotificationSettings(context: Context) {
         Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
             .setData(Uri.parse("package:${context.packageName}"))
     }
-    try {
-        context.startActivity(intent)
-    } catch (_: Exception) {
-        // Some OEM builds do not expose these settings screens.
-    }
+    runCatching { context.startActivity(intent) }
 }

@@ -6,8 +6,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
 /**
- * Stream Buddy is deliberately dark-only: media apps look best on near-black, and the
- * platform window background is set to the same colour in res/values/themes.xml.
+ * Stream Buddy is deliberately dark-only: media apps look best on near-black, and the platform
+ * window background is set to the same colour in res/values/themes.xml.
  */
 private val StreamBuddyColors = darkColorScheme(
     primary = Color(0xFF4FA3FF),
@@ -26,8 +26,6 @@ private val StreamBuddyColors = darkColorScheme(
     onSurface = Color(0xFFE6EDF3),
     surfaceVariant = Color(0xFF1B222C),
     onSurfaceVariant = Color(0xFF9BA7B4),
-    surfaceContainer = Color(0xFF131A22),
-    surfaceContainerHigh = Color(0xFF18202A),
     outline = Color(0xFF3A4552),
     outlineVariant = Color(0xFF252E39),
     error = Color(0xFFFF7B72),
