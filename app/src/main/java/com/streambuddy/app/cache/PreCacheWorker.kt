@@ -1,66 +1,313 @@
 package com.streambuddy.app.cache
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.os.Build
 import androidx.core.app.NotificationCompat
-import androidx.work.*
-import androidx.media3.datasource.DefaultHttpDataSource
-import androidx.media3.datasource.cache.CacheDataSource
-import androidx.media3.datasource.cache.CacheWriter
-import androidx.media3.exoplayer.hls.HlsMediaSource
-import androidx.media3.common.MediaItem
-import androidx.media3.common.util.UnstableApi
-import kotlinx.coroutines.Dispatchers
+import androidx.core.app.NotificationManagerCompat
+import androidx.work.BackoffPolicy
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.ExistingWorkPolicy
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
+import androidx.work.WorkerParameters
+import androidx.work.workDataOf
+import com.streambuddy.app.data.AppDb
+import com.streambuddy.app.data.SettingsRepository
+import com.streambuddy.app.data.StreamDao
+import com.streambuddy.app.data.StreamEntity
+import com.streambuddy.app.stream.CacheState
+import com.streambuddy.app.stream.DrmProtectedException
+import com.streambuddy.app.stream.PlaylistParseException
+import com.streambuddy.app.stream.PreCacheEngine
+import com.streambuddy.app.stream.UnsupportedStreamException
+import com.streambuddy.app.util.Format
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import okhttp3.OkHttpClient
-import okhttp3.Request
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
-@androidx.annotation.OptIn(UnstableApi::class)
-class PreCacheWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+/**
+ * Background pre-cache job for one queue entry.
+ *
+ * State is written to Room as it progresses (so the UI is live) and echoed to a low-priority
+ * progress notification. Work is resumable: a retry continues from whatever is already cached.
+ */
+class PreCacheWorker(
+    appContext: Context,
+    params: WorkerParameters,
+) : CoroutineWorker(appContext, params) {
 
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val url = inputData.getString("url") ?: return@withContext Result.failure()
-        val id = inputData.getLong("streamId", -1)
-        val prefetchFraction = inputData.getFloat("prefetchFraction", 0.25f) // "pre-play" depth
-        notify("Pre-caching…", 0)
+    override suspend fun doWork(): Result {
+        val streamId = inputData.getLong(KEY_STREAM_ID, NO_STREAM_ID)
+        if (streamId == NO_STREAM_ID) return Result.failure()
 
-        val head = OkHttpClient().newCall(Request.Builder().url(url).build()).execute()
-        val body = head.body?.string() ?: ""
-        if (CacheManager.isDrmProtected(body)) {
-            notify("DRM-protected — cannot pre-cache", 100)
-            return@withContext Result.failure(workDataOf("drm" to true))
+        val dao = AppDb.get(applicationContext).streams()
+        val stream = dao.findById(streamId) ?: return Result.failure()
+
+        val settings = SettingsRepository.get(applicationContext).settings.value
+        val depthMs = stream.prefetchMillis.takeIf { it > 0L } ?: settings.prefetchMillis
+
+        dao.resetForCaching(streamId, depthMs, CacheState.CACHING.name, now())
+        post(stream, progressNotification(stream, "Preparing…", percent = null, indeterminate = true))
+
+        val latest = AtomicReference<PreCacheEngine.Progress?>(null)
+        val engine = PreCacheEngine(applicationContext)
+
+        return try {
+            val outcome = coroutineScope {
+                val reporter = launch {
+                    while (isActive) {
+                        delay(PROGRESS_INTERVAL_MS)
+                        val progress = latest.getAndSet(null) ?: continue
+                        dao.updateProgress(
+                            id = streamId,
+                            state = CacheState.CACHING.name,
+                            cachedBytes = progress.cachedBytes,
+                            totalBytes = progress.totalBytes,
+                            cachedMillis = progress.cachedDurationMs,
+                            totalMillis = progress.totalDurationMs,
+                            prefetchMillis = depthMs,
+                            error = null,
+                            now = now(),
+                        )
+                        post(
+                            stream,
+                            progressNotification(
+                                stream = stream,
+                                text = progressText(progress),
+                                percent = percentOf(progress),
+                                indeterminate = false,
+                            ),
+                        )
+                    }
+                }
+                try {
+                    engine.prefetch(
+                        url = stream.url,
+                        kindHint = stream.streamKind,
+                        depthMs = depthMs,
+                        preferHighestQuality = settings.preferHighestQuality,
+                        onProgress = { progress -> latest.set(progress) },
+                    )
+                } finally {
+                    // Wait for the reporter to stop before the caller overwrites the row with the
+                    // final state, otherwise a queued progress write could land after it.
+                    withContext(NonCancellable) {
+                        reporter.cancel()
+                        reporter.join()
+                    }
+                }
+            }
+
+            dao.updateProgress(
+                id = streamId,
+                state = CacheState.READY.name,
+                cachedBytes = outcome.cachedBytes,
+                totalBytes = outcome.totalBytes,
+                cachedMillis = outcome.cachedDurationMs,
+                totalMillis = outcome.totalDurationMs,
+                prefetchMillis = depthMs,
+                error = null,
+                now = now(),
+            )
+            post(
+                stream,
+                doneNotification(
+                    stream = stream,
+                    text = "Ready to play · ${Format.bytes(outcome.cachedBytes)} cached",
+                    success = true,
+                ),
+            )
+            Result.success()
+        } catch (cancellation: CancellationException) {
+            withContext(NonCancellable) {
+                dao.updateState(streamId, CacheState.QUEUED.name, "Cancelled", now())
+                NotificationManagerCompat.from(applicationContext).cancel(notificationId(streamId))
+            }
+            throw cancellation
+        } catch (drm: DrmProtectedException) {
+            val message = "${drm.scheme} protected — open the app to watch it"
+            recordFailure(dao, streamId, depthMs, CacheState.UNSUPPORTED, message)
+            post(stream, doneNotification(stream, message, success = false))
+            Result.success() // retrying cannot help
+        } catch (unsupported: UnsupportedStreamException) {
+            val message = unsupported.message ?: "This stream cannot be pre-cached"
+            recordFailure(dao, streamId, depthMs, CacheState.UNSUPPORTED, message)
+            post(stream, doneNotification(stream, message, success = false))
+            Result.success()
+        } catch (parse: PlaylistParseException) {
+            val message = parse.message ?: "The playlist could not be parsed"
+            recordFailure(dao, streamId, depthMs, CacheState.FAILED, message)
+            post(stream, doneNotification(stream, message, success = false))
+            Result.failure()
+        } catch (io: IOException) {
+            val message = io.message ?: "Network error"
+            if (runAttemptCount < MAX_ATTEMPTS - 1) {
+                recordFailure(dao, streamId, depthMs, CacheState.QUEUED, message)
+                post(stream, doneNotification(stream, "Will retry: $message", success = false))
+                Result.retry()
+            } else {
+                recordFailure(dao, streamId, depthMs, CacheState.FAILED, message)
+                post(stream, doneNotification(stream, message, success = false))
+                Result.failure()
+            }
+        } catch (unexpected: Throwable) {
+            val message = unexpected.message ?: unexpected.javaClass.simpleName
+            recordFailure(dao, streamId, depthMs, CacheState.FAILED, message)
+            post(stream, doneNotification(stream, message, success = false))
+            Result.failure()
         }
-
-        val upstream = DefaultHttpDataSource.Factory()
-        val cacheDs = CacheDataSource.Factory().setCache(CacheManager.get(applicationContext))
-            .setUpstreamDataSourceFactory(upstream)
-            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
-        val writer = CacheWriter(cacheDs.createDataSource(),
-            androidx.media3.datasource.DataSpec.Builder().setUri(url).build(), null, null)
-        try { writer.cache() } catch (_: Exception) { /* partial cache still helps playback */ }
-
-        val db = com.streambuddy.app.data.AppDb.get(applicationContext)
-        notify("Cached and ready ▶", 100)
-        Result.success(workDataOf("streamId" to id, "prefetch" to prefetchFraction))
     }
 
-    private fun notify(text: String, progress: Int) {
-        val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(NotificationChannel("cache", "Pre-Cache", NotificationManager.IMPORTANCE_LOW))
-        nm.notify(urlHash(), NotificationCompat.Builder(applicationContext, "cache")
-            .setContentTitle("Stream Buddy").setContentText(text)
+    private suspend fun recordFailure(
+        dao: StreamDao,
+        streamId: Long,
+        depthMs: Long,
+        state: CacheState,
+        message: String,
+    ) {
+        val existing = dao.findById(streamId) ?: return
+        val effectiveState = if (
+            state == CacheState.FAILED && (existing.cachedBytes > 0L || existing.cachedMillis > 0L)
+        ) {
+            CacheState.PARTIAL
+        } else {
+            state
+        }
+        dao.updateProgress(
+            id = streamId,
+            state = effectiveState.name,
+            cachedBytes = existing.cachedBytes,
+            totalBytes = existing.totalBytes,
+            cachedMillis = existing.cachedMillis,
+            totalMillis = existing.totalMillis,
+            prefetchMillis = depthMs,
+            error = Format.shortMessage(message),
+            now = now(),
+        )
+    }
+
+    private fun progressText(progress: PreCacheEngine.Progress): String {
+        val percent = percentOf(progress)
+        return when {
+            progress.totalDurationMs > 0L ->
+                "Caching ${Format.duration(progress.cachedDurationMs)} of " +
+                    "${Format.duration(progress.totalDurationMs)}" + (percent?.let { " · $it%" } ?: "")
+            progress.cachedBytes > 0L -> "Cached ${Format.bytes(progress.cachedBytes)}"
+            else -> "Preparing…"
+        }
+    }
+
+    private fun percentOf(progress: PreCacheEngine.Progress): Int? = when {
+        progress.totalDurationMs > 0L -> Format.percent(progress.cachedDurationMs, progress.totalDurationMs)
+        progress.totalBytes > 0L -> Format.percent(progress.cachedBytes, progress.totalBytes)
+        progress.segmentsTotal > 1 -> (progress.segmentsDone * 100) / progress.segmentsTotal
+        else -> null
+    }
+
+    private fun progressNotification(
+        stream: StreamEntity,
+        text: String,
+        percent: Int?,
+        indeterminate: Boolean,
+    ): Notification {
+        ensureChannel()
+        val builder = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setProgress(100, progress, progress in 1..99).setOngoing(progress in 1..99).build())
+            .setContentTitle(stream.title)
+            .setContentText(text)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setProgress(100, percent ?: 0, indeterminate)
+        return builder.build()
     }
-    private fun urlHash() = (inputData.getString("url") ?: "").hashCode()
+
+    private fun doneNotification(stream: StreamEntity, text: String, success: Boolean): Notification {
+        ensureChannel()
+        return NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(
+                if (success) android.R.drawable.stat_sys_download_done else android.R.drawable.stat_notify_error,
+            )
+            .setContentTitle(stream.title)
+            .setContentText(text)
+            .setOnlyAlertOnce(true)
+            .setOngoing(false)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+    }
+
+    private fun post(stream: StreamEntity, notification: Notification) {
+        val manager = NotificationManagerCompat.from(applicationContext)
+        if (!manager.areNotificationsEnabled()) return
+        try {
+            manager.notify(notificationId(stream.id), notification)
+        } catch (_: SecurityException) {
+            // Notification permission was revoked between the check and the call.
+        }
+    }
+
+    private fun ensureChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val manager = applicationContext
+            .getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_ID, "Pre-cache progress", NotificationManager.IMPORTANCE_LOW)
+                .apply {
+                    description = "Shows how much of a stream has been cached for playback"
+                    setShowBadge(false)
+                },
+        )
+    }
+
+    private fun notificationId(streamId: Long): Int = (streamId and 0x7FFFFFFFL).toInt()
+
+    private fun now(): Long = System.currentTimeMillis()
 
     companion object {
-        fun enqueue(c: Context, streamId: Long, url: String, fraction: Float) {
-            WorkManager.getInstance(c).enqueue(OneTimeWorkRequestBuilder<PreCacheWorker>()
-                .setInputData(workDataOf("url" to url, "streamId" to streamId, "prefetchFraction" to fraction))
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-                .build())
+        private const val KEY_STREAM_ID = "stream_id"
+        private const val NO_STREAM_ID = -1L
+        private const val MAX_ATTEMPTS = 3
+        private const val PROGRESS_INTERVAL_MS = 700L
+        private const val CHANNEL_ID = "precache_progress"
+
+        /** Queues (or restarts) the pre-cache job for [streamId]. */
+        fun enqueue(context: Context, streamId: Long) {
+            val request = OneTimeWorkRequestBuilder<PreCacheWorker>()
+                .setInputData(workDataOf(KEY_STREAM_ID to streamId))
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build(),
+                )
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
+                .build()
+
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                uniqueName(streamId),
+                ExistingWorkPolicy.REPLACE,
+                request,
+            )
         }
+
+        /** Cancels a running job for [streamId] (already-cached data is kept). */
+        fun cancel(context: Context, streamId: Long) {
+            WorkManager.getInstance(context).cancelUniqueWork(uniqueName(streamId))
+        }
+
+        private fun uniqueName(streamId: Long): String = "precache-$streamId"
     }
 }

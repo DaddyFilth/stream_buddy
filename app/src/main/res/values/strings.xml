@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Stream Buddy</string>
+
+    <string name="tab_apps">Apps</string>
+    <string name="tab_queue">Queue</string>
+    <string name="tab_player">Player</string>
+    <string name="tab_settings">Settings</string>
+
+    <string name="action_play">Play</string>
+    <string name="action_prefetch">Pre-play</string>
+    <string name="action_retry">Retry</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_clear_cache">Clear cache</string>
+</resources>
