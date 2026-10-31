@@ -11,6 +11,13 @@ Queue a stream  ──▶  WorkManager job  ──▶  Media3 SimpleCache (2 GB 
 Player tab      ──▶  ExoPlayer, cache-first  ───────┘
 ```
 
+## Status
+
+CI (`.github/workflows/android.yml`) compiles the app, runs the unit tests and packages a debug
+APK on every pull request; the APK is uploaded as the `stream-buddy-debug-apk` artifact of the run.
+It has **not** been exercised on a physical device yet, so playback edge cases are untested — see
+the limitations below.
+
 ## What works
 
 | Area | Behaviour |
@@ -18,7 +25,7 @@ Player tab      ──▶  ExoPlayer, cache-first  ───────┘
 | **Queue** | Add an HLS playlist (`.m3u8`), a DASH manifest (`.mpd`) or a media file (`.mp4`, `.mkv`, …). Title is optional and derived from the URL when blank. Live cache state, progress, errors, retry and delete. |
 | **Pre-caching** | HLS: resolves the master playlist to a variant, then caches segments covering the configured pre-play window (2/5/10/20 min), including `#EXT-X-MAP` init segments and `#EXT-X-BYTERANGE` sub-ranges. Progressive files: caches the first 25 % of the file (8 MB – 150 MB). Runs in the background with a low-priority progress notification and resumes after retries or cancellation. |
 | **DRM** | FairPlay, Widevine, PlayReady and CENC are detected from the playlist/manifest and never cached. Ordinary HLS `AES-128` encryption is *not* DRM and stays cacheable. |
-| **Playback** | ExoPlayer reads through the same cache, so pre-cached data is used immediately and everything else is cached as it plays. HLS/DASH manifests deliberately bypass the cache so live playlists never go stale. |
+| **Playback** | ExoPlayer reads through the same cache, so pre-cached data is used immediately and everything else is cached as it plays (HLS segments always; progressive files when the server reports a length). HLS/DASH manifests deliberately bypass the cache so live playlists never go stale. |
 | **Apps** | Lists launchable apps with streaming services first; tapping one opens it. DRM services only play inside their own app, so Stream Buddy launches them instead of pretending it can cache them. |
 | **Settings** | Pre-play window, cache quality (lowest/highest HLS variant), cache usage and clearing, notification permission, version/about. |
 
@@ -78,7 +85,14 @@ app/src/main/java/com/streambuddy/app/
 │   ├── StreamKind.kt            URL/content-type → stream type
 │   ├── StreamUrl.kt             URL validation, scheme repair, title suggestion
 │   └── PreCacheErrors.kt        retryable vs. permanent failures
-├── ui/                          Compose screens, theme, view model
+├── ui/
+│   ├── MainViewModel.kt         queue/settings flows + the single ExoPlayer
+│   ├── AppsScreen.kt            launchable apps, streaming services first
+│   ├── QueueScreen.kt           add streams, per-entry cache state
+│   ├── PlayerScreen.kt          PlayerView + queue shortcuts
+│   ├── SettingsScreen.kt        pre-play window, quality, storage, notifications
+│   ├── Components.kt            shared Compose pieces
+│   └── Theme.kt                 dark Material 3 theme
 └── util/Format.kt               byte/duration/percent formatting
 ```
 
