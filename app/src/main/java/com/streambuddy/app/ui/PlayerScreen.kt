@@ -73,7 +73,6 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                         }
                     },
                     update = { view -> view.player = viewModel.player },
-                    onRelease = { view -> view.player = null },
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(16f / 9f)

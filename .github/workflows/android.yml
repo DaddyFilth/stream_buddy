@@ -31,12 +31,32 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
 
       - name: Unit tests
-        run: ./gradlew testDebugUnitTest --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew testDebugUnitTest --stacktrace --console=plain 2>&1 | tee test.log
 
       - name: Assemble debug APK
-        run: ./gradlew assembleDebug --stacktrace
+        run: |
+          set -o pipefail
+          ./gradlew assembleDebug --stacktrace --console=plain 2>&1 | tee assemble.log
+
+      # Compiler output is not readable from outside Actions, so surface it as check-run
+      # annotations (which are readable through the API).
+      - name: Report Kotlin errors
+        if: always()
+        run: |
+          cat test.log assemble.log > ci.log 2>/dev/null || true
+          [ -f ci.log ] || exit 0
+          total=$(grep -cE '^e: ' ci.log || true)
+          echo "::error::Kotlin compile errors: ${total:-0}"
+          grep -E '^e: ' ci.log | sed -E 's|file:///[^ ]*/app/|app/|' | sort -u | head -38 \
+            | while IFS= read -r line; do printf '::error::%s\n' "$line"; done
+          grep -E 'FAILED|There were failing tests|Execution failed for task|error:' ci.log \
+            | grep -vE '^e: ' | sort -u | head -6 \
+            | while IFS= read -r line; do printf '::error::%s\n' "$line"; done
 
       - name: Upload debug APK
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: stream-buddy-debug-apk
