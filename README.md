@@ -37,7 +37,8 @@ Player tab      ──▶  ExoPlayer, cache-first  ───────┘
 
 ## Build
 
-Requirements: JDK 17, Android SDK Platform 34 + Build-Tools 34.
+Requirements: JDK 17, Android SDK Platform 35 + Build-Tools 35
+(`compileSdk = 35`, `targetSdk = 34`, `minSdk = 24`).
 
 ```bash
 # 1. Point Gradle at your SDK (Android Studio does this for you).
@@ -50,7 +51,8 @@ echo "sdk.dir=$HOME/Android/Sdk" > local.properties   # or export ANDROID_HOME=.
 ./gradlew testDebugUnitTest
 ```
 
-The APK lands in `app/build/outputs/apk/debug/app-debug.apk`.
+The APK lands in `app/build/outputs/apk/debug/app-debug.apk`. CI runs the same two commands on
+every pull request and uploads the APK as the `stream-buddy-debug-apk` artifact.
 
 ## Project layout
 

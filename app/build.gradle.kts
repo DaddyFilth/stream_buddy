@@ -102,8 +102,10 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
     implementation("androidx.media3:media3-exoplayer-dash:1.4.1")
     implementation("androidx.media3:media3-ui:1.4.1")
+    // CacheDataSource/SimpleCache/CacheWriter live in media3-datasource;
+    // StandaloneDatabaseProvider lives in media3-database. There is no
+    // media3-datasource-cache artifact.
     implementation("androidx.media3:media3-datasource:1.4.1")
-    implementation("androidx.media3:media3-datasource-cache:1.4.1")
     implementation("androidx.media3:media3-database:1.4.1")
 
     // Networking / coroutines
