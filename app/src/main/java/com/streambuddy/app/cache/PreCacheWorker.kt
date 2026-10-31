@@ -3,7 +3,9 @@ package com.streambuddy.app.cache
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -16,6 +18,8 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.streambuddy.app.MainActivity
+import com.streambuddy.app.R
 import com.streambuddy.app.data.AppDb
 import com.streambuddy.app.data.SettingsRepository
 import com.streambuddy.app.data.StreamDao
@@ -228,15 +232,21 @@ class PreCacheWorker(
         indeterminate: Boolean,
     ): Notification {
         ensureChannel()
-        val builder = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+        return NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle(stream.title)
             .setContentText(text)
+            .setContentIntent(openAppIntent(stream.id))
+            .addAction(
+                0,
+                applicationContext.getString(R.string.notification_action_cancel),
+                cancelIntent(stream.id),
+            )
             .setOnlyAlertOnce(true)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setProgress(100, percent ?: 0, indeterminate)
-        return builder.build()
+            .build()
     }
 
     private fun doneNotification(stream: StreamEntity, text: String, success: Boolean): Notification {
@@ -247,12 +257,34 @@ class PreCacheWorker(
             )
             .setContentTitle(stream.title)
             .setContentText(text)
+            .setContentIntent(openAppIntent(stream.id))
             .setOnlyAlertOnce(true)
             .setOngoing(false)
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
+
+    /** Tapping the notification opens the app on the player tab. */
+    private fun openAppIntent(streamId: Long): PendingIntent {
+        val intent = Intent(applicationContext, MainActivity::class.java)
+            .setAction(Intent.ACTION_VIEW)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .putExtra(EXTRA_OPEN_STREAM_ID, streamId)
+        return PendingIntent.getActivity(
+            applicationContext,
+            notificationId(streamId),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    private fun cancelIntent(streamId: Long): PendingIntent = PendingIntent.getBroadcast(
+        applicationContext,
+        notificationId(streamId),
+        CancelPreCacheReceiver.intent(applicationContext, streamId),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
 
     private fun post(stream: StreamEntity, notification: Notification) {
         val manager = NotificationManagerCompat.from(applicationContext)
@@ -278,8 +310,6 @@ class PreCacheWorker(
         )
     }
 
-    private fun notificationId(streamId: Long): Int = (streamId and 0x7FFFFFFFL).toInt()
-
     private fun now(): Long = System.currentTimeMillis()
 
     companion object {
@@ -287,6 +317,12 @@ class PreCacheWorker(
         private const val KEY_DEPTH_MS = "depth_ms"
         private const val NO_STREAM_ID = -1L
         private const val NO_DEPTH_MS = 0L
+
+        /** Intent extra read by [MainActivity] to jump to a stream after a notification tap. */
+        const val EXTRA_OPEN_STREAM_ID = "open_stream_id"
+
+        /** Stable per-stream notification id (fits in the positive int range). */
+        fun notificationId(streamId: Long): Int = (streamId and 0x7FFFFFFFL).toInt()
         private const val MAX_ATTEMPTS = 3
         private const val PROGRESS_INTERVAL_MS = 700L
         private const val CHANNEL_ID = "precache_progress"

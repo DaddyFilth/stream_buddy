@@ -1,9 +1,40 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("com.google.devtools.ksp")
 }
+
+/**
+ * Release signing is configured from `keystore.properties` (untracked) or, in CI, from
+ * environment variables. Without either, `assembleRelease` still runs and produces an unsigned
+ * APK — convenient for CI, but such a build cannot be installed over a signed one.
+ *
+ *   STREAMBUDDY_KEYSTORE       path to the .jks
+ *   STREAMBUDDY_KEYSTORE_PASS  store password
+ *   STREAMBUDDY_KEY_ALIAS      key alias
+ *   STREAMBUDDY_KEY_PASS       key password
+ */
+val keystoreProperties = Properties().apply {
+    val file = rootProject.file("keystore.properties")
+    if (file.exists()) file.inputStream().use { load(it) }
+}
+
+fun signingValue(property: String, env: String): String? =
+    keystoreProperties.getProperty(property) ?: System.getenv(env)
+
+val releaseStoreFile = signingValue("storeFile", "STREAMBUDDY_KEYSTORE")
+val releaseStorePassword = signingValue("storePassword", "STREAMBUDDY_KEYSTORE_PASS")
+val releaseKeyAlias = signingValue("keyAlias", "STREAMBUDDY_KEY_ALIAS")
+val releaseKeyPassword = signingValue("keyPassword", "STREAMBUDDY_KEY_PASS")
+val hasReleaseSigning = listOf(
+    releaseStoreFile,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
 
 android {
     namespace = "com.streambuddy.app"
@@ -12,10 +43,25 @@ android {
     defaultConfig {
         applicationId = "com.streambuddy.app"
         minSdk = 24
-        targetSdk = 34
+        // Play requires targeting a recent API level; 35 is also enforced edge-to-edge.
+        targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
         vectorDrawables.useSupportLibrary = true
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseStoreFile!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
     }
 
     buildTypes {
@@ -23,14 +69,17 @@ android {
             isMinifyEnabled = false
         }
         release {
-            // Left off until the release build has been validated on a device.
-            // Rules that are ready for it live in app/proguard-rules.pro.
-            isMinifyEnabled = false
-            isShrinkResources = false
+            // R8 is on: the keep rules for Room, WorkManager, Media3 and OkHttp live in
+            // app/proguard-rules.pro, and the CI build compiles this variant on every run.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -65,6 +114,14 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+    }
+
+    lint {
+        // Treat lint errors as build failures, but do not fail on the warning backlog.
+        abortOnError = true
+        warningsAsErrors = false
+        checkReleaseBuilds = false
+        disable += setOf("AndroidGradlePluginVersion", "GradleDependency", "NewerVersionAvailable")
     }
 }
 
@@ -112,5 +169,16 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 
+    // Unit tests (JVM)
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
+
+    // Instrumented tests (device / emulator)
+    androidTestImplementation(composeBom)
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test:rules:1.6.1")
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

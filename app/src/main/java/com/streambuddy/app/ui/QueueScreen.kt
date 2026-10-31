@@ -30,6 +30,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -54,9 +55,17 @@ fun QueueScreen(
 ) {
     val streams by viewModel.streams.collectAsStateWithLifecycle()
     val predictions by viewModel.predictions.collectAsStateWithLifecycle()
+    val sharedUrl by viewModel.sharedUrl.collectAsStateWithLifecycle()
     var url by rememberSaveable { mutableStateOf("") }
     var title by rememberSaveable { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<StreamEntity?>(null) }
+
+    // A URL shared from another app (or a deep link) pre-fills the field once, then is cleared.
+    LaunchedEffect(sharedUrl) {
+        val incoming = sharedUrl ?: return@LaunchedEffect
+        url = incoming
+        viewModel.consumeSharedUrl()
+    }
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),

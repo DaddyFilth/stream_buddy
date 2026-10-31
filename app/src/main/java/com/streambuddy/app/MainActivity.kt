@@ -1,10 +1,12 @@
 package com.streambuddy.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -28,6 +30,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
@@ -39,7 +42,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import com.streambuddy.app.cache.PreCacheWorker
 import com.streambuddy.app.data.SettingsRepository
+import com.streambuddy.app.stream.SharedLink
 import com.streambuddy.app.ui.AppsScreen
 import com.streambuddy.app.ui.MainViewModel
 import com.streambuddy.app.ui.PlayerScreen
@@ -55,6 +60,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Android 15 enforces edge-to-edge; opt in explicitly so older versions match.
+        enableEdgeToEdge()
+        handleIntent(intent)
         setContent {
             StreamBuddyTheme {
                 StreamBuddyApp(viewModel = viewModel)
@@ -62,10 +70,46 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    /**
+     * Turns a share sheet payload, a `streambuddy://` deep link or a pre-cache notification tap
+     * into a view-model request. Unknown intents leave the app on its normal start screen.
+     */
+    private fun handleIntent(intent: Intent?) {
+        intent ?: return
+
+        // Notification tap: jump straight to the stream it was caching.
+        val streamId = intent.getLongExtra(PreCacheWorker.EXTRA_OPEN_STREAM_ID, NO_STREAM_ID)
+        if (streamId != NO_STREAM_ID) {
+            viewModel.focusStream(streamId)
+            return
+        }
+
+        val sharedText = when (intent.action) {
+            Intent.ACTION_SEND -> intent.getStringExtra(Intent.EXTRA_TEXT)
+            else -> null
+        }
+        val target = SharedLink.parse(
+            action = intent.action,
+            dataString = intent.dataString,
+            sharedText = sharedText,
+        )
+        viewModel.handleSharedLink(target)
+    }
+
     override fun onStop() {
         super.onStop()
         // No media session is published, so pause instead of playing audio unattended.
         if (!isChangingConfigurations) viewModel.pausePlayback()
+    }
+
+    private companion object {
+        const val NO_STREAM_ID = -1L
     }
 }
 
@@ -90,6 +134,14 @@ private fun StreamBuddyApp(viewModel: MainViewModel, modifier: Modifier = Modifi
 
     LaunchedEffect(viewModel) {
         viewModel.messages.collect { message -> snackbarHostState.showSnackbar(message) }
+    }
+
+    // Deep links, share intents and notifications ask for a tab; the nav host applies it once.
+    val requestedTab by viewModel.requestedTab.collectAsStateWithLifecycle()
+    LaunchedEffect(requestedTab) {
+        val route = requestedTab ?: return@LaunchedEffect
+        navController.switchTab(route)
+        viewModel.consumeRequestedTab()
     }
 
     RequestNotificationPermissionOnce()

@@ -24,6 +24,7 @@ import com.streambuddy.app.data.PredictorRepository
 import com.streambuddy.app.data.SettingsRepository
 import com.streambuddy.app.data.StreamEntity
 import com.streambuddy.app.stream.CacheState
+import com.streambuddy.app.stream.SharedLink
 import com.streambuddy.app.stream.StreamKind
 import com.streambuddy.app.stream.StreamUrl
 import kotlinx.coroutines.Dispatchers
@@ -78,6 +79,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     /** Learned-model status for the Settings screen. */
     val modelState = PredictorRepository.get(app).state
+
+    /**
+     * A URL that arrived from the share sheet or a deep link, waiting for the Queue screen to pick
+     * it up. Cleared with [consumeSharedUrl] so it is applied exactly once.
+     */
+    private val _sharedUrl = MutableStateFlow<String?>(null)
+    val sharedUrl: StateFlow<String?> = _sharedUrl.asStateFlow()
+
+    /** A tab requested by a deep link, waiting for the nav host to consume it. */
+    private val _requestedTab = MutableStateFlow<String?>(null)
+    val requestedTab: StateFlow<String?> = _requestedTab.asStateFlow()
 
     /** The playback currently being watched, so a session can be recorded when it ends. */
     private var session: WatchSession? = null
@@ -149,6 +161,50 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             }
         }
     }
+
+    // region intents
+
+    /**
+     * Handles a share sheet / deep link payload. Returns `true` when something was consumed, so
+     * the activity knows whether to navigate.
+     */
+    fun handleSharedLink(target: SharedLink.Target): Boolean =
+        when (target) {
+            is SharedLink.Target.Stream -> {
+                _sharedUrl.value = target.url
+                _requestedTab.value = "queue"
+                post("Shared link ready — press Add to pre-play it")
+                true
+            }
+
+            is SharedLink.Target.Tab -> {
+                _requestedTab.value = target.route
+                true
+            }
+
+            SharedLink.Target.Ignore -> false
+        }
+
+    /** Marks the shared URL as handled. */
+    fun consumeSharedUrl() {
+        _sharedUrl.value = null
+    }
+
+    /** Marks the requested tab as handled. */
+    fun consumeRequestedTab() {
+        _requestedTab.value = null
+    }
+
+    /** Deep link to a specific queue entry, used by the pre-cache notification. */
+    fun focusStream(streamId: Long) {
+        viewModelScope.launch {
+            val stream = dao.findById(streamId) ?: return@launch
+            play(stream)
+            _requestedTab.value = "player"
+        }
+    }
+
+    // endregion
 
     // region queue
 
