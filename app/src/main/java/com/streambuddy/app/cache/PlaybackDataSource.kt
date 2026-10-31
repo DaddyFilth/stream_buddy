@@ -7,6 +7,7 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.cache.CacheDataSource
+import com.streambuddy.app.torrent.MagnetLink
 
 /**
  * Media data source used for playback: media segments go through the cache, manifests do not.
@@ -20,11 +21,14 @@ import androidx.media3.datasource.cache.CacheDataSource
 class PlaybackDataSourceFactory(
     private val cacheFactory: CacheDataSource.Factory,
     private val networkFactory: DefaultHttpDataSource.Factory,
+    /** Reads `streambuddy-torrent://` URIs straight from the BitTorrent engine. */
+    private val torrentFactory: DataSource.Factory? = null,
 ) : DataSource.Factory {
 
     override fun createDataSource(): DataSource = PlaybackDataSource(
         cacheDataSource = cacheFactory.createDataSource(),
         networkDataSource = networkFactory.createDataSource(),
+        torrentDataSource = torrentFactory?.createDataSource(),
     )
 }
 
@@ -32,6 +36,7 @@ class PlaybackDataSourceFactory(
 private class PlaybackDataSource(
     private val cacheDataSource: DataSource,
     private val networkDataSource: DataSource,
+    private val torrentDataSource: DataSource?,
 ) : DataSource {
 
     private var active: DataSource? = null
@@ -39,10 +44,16 @@ private class PlaybackDataSource(
     override fun addTransferListener(transferListener: TransferListener) {
         cacheDataSource.addTransferListener(transferListener)
         networkDataSource.addTransferListener(transferListener)
+        torrentDataSource?.addTransferListener(transferListener)
     }
 
     override fun open(dataSpec: DataSpec): Long {
-        val target = if (isManifest(dataSpec.uri)) networkDataSource else cacheDataSource
+        val target = when {
+            isTorrent(dataSpec.uri) -> torrentDataSource
+                ?: throw java.io.IOException("Torrent support is not available")
+            isManifest(dataSpec.uri) -> networkDataSource
+            else -> cacheDataSource
+        }
         active = target
         return target.open(dataSpec)
     }
@@ -59,6 +70,9 @@ private class PlaybackDataSource(
         active = null
         target.close()
     }
+
+    private fun isTorrent(uri: Uri): Boolean =
+        MagnetLink.SCHEME.equals(uri.scheme, ignoreCase = true)
 
     private fun isManifest(uri: Uri): Boolean {
         val path = uri.path?.lowercase() ?: return false

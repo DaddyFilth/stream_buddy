@@ -28,6 +28,7 @@ the limitations below.
 | **Playback** | ExoPlayer reads through the same cache, so pre-cached data is used immediately and everything else is cached as it plays (HLS segments always; progressive files when the server reports a length). HLS/DASH manifests deliberately bypass the cache so live playlists never go stale. |
 | **Apps** | Lists launchable apps with streaming services first; tapping one opens it. DRM services only play inside their own app, so Stream Buddy launches them instead of pretending it can cache them. |
 | **Smart pre-cache** | An on-device model ranks the queue, predicts which stream you will open next (series + episode order, recency, how often you finish, time of day) and pre-caches the best guess deeply and two runner-ups shallowly — on Wi-Fi, while charging. Every prediction shows the reasons behind it and can be switched off. |
+| **Torrents** | Paste a `magnet:` link (or share one, or open one from a browser) and the app resolves the metadata over BitTorrent, picks the file that suits this device and connection, and plays it while it downloads — no separate client, no manual file picking. |
 | **Settings** | Smart pre-cache on/off + model status, pre-play window, cache quality (lowest/highest HLS variant), cache usage and clearing, notification permission, version/about. |
 
 ## Honest limitations
@@ -42,6 +43,13 @@ the limitations below.
   `MediaSessionService`/notification transport controls are published yet.
 * Cache eviction is LRU inside a fixed 2 GB budget (`CacheManager.MAX_BYTES`); deleting a queue
   entry does not evict its cached segments directly — "Clear cache" in Settings does.
+* **BitTorrent is a general-purpose client.** Stream Buddy downloads exactly what a magnet points
+  at and applies no source filtering. Use it for content you have the right to access; that is your
+  responsibility, not the app's.
+* **Only arm64 devices and x86_64 emulators are packaged** (`abiFilters`), because libtorrent ships
+  a native library per ABI and the 32-bit builds double the download size.
+* **Torrent files are kept** in app-specific external storage (`Android/data/…/Movies/torrents`)
+  when a queue entry is removed; delete them from the device to reclaim space, or remove the app.
 
 ## What the "AI" actually is
 
@@ -72,6 +80,36 @@ The prediction changes the *plan*, not the cache limit: the top pick gets
 wrong guess wastes very little, and the periodic pass only runs on an unmetered network while
 charging (`SmartPrefetchWorker`). With smart pre-cache off, the app behaves exactly as before:
 everything you queue is cached with your configured window.
+
+## Torrents: magnet in, video out
+
+The torrent path exists because "add a magnet link and watch it" is a real, testable feature, and
+because BitTorrent has a well-defined answer for every "how does it stream?" question. The pieces:
+
+| Piece | What it does |
+| --- | --- |
+| `torrent/MagnetLink.kt` | Parses `magnet:?xt=urn:btih:…` — hex or base32 info hash, `dn`, `tr`, `xl`. Pure Kotlin, unit-tested, used by the queue, the share sheet and the `magnet:` VIEW intent. |
+| `torrent/TorrentEngine.kt` | One libtorrent session per process. Adds the torrent, waits for BEP 9 metadata (45 s), asks `QualitySelector` which file to play, then prioritises **only that file** (`Priority.NORMAL`, everything else `IGNORE`) so a 40 GB season pack does not download 40 GB. |
+| `torrent/QualitySelector.kt` | The "optimal quality" decision: a transparent score over the device's real screen size, MediaCodec decoder limits, HEVC/HDR support, free storage, metered/slow network, container and remux size. Returns the pick *and* the reasons behind it. |
+| `torrent/TorrentDataSource.kt` | A Media3 `DataSource` for `streambuddy-torrent://<infohash>/<fileIndex>`. Each `read()` blocks on `havePiece()` for the pieces it needs, with piece deadlines ~48 pieces (≈60 s of readahead) ahead of the playhead. Seeking works because seeking is just another `open()` at a new offset. |
+| `cache/PlaybackDataSource.kt` | Routes the torrent scheme to that source, manifests to plain HTTP, and everything else through the Media3 cache. |
+
+**Where the "AI" is, and is not.** There is no LLM here and no cloud model. The quality choice is a
+deterministic scoring function with explainable reasons — the same algorithm a good human would
+apply, written down. That is the honest version of "AI-powered resolver": the hard part of torrent
+playback is *deciding* (which file, when to start, what to drop when the connection sags) and doing
+it instantly on-device. The prediction model in `ai/` is separately real, but it rank-orders the
+queue; it does not pick torrent files.
+
+**Why playback starts before the download finishes.** libtorrent writes pieces in the order the
+player asks for them: `TorrentDataSource` sets a piece deadline for the window being read plus a
+readahead, and blocks that read until the pieces land. The first frame therefore waits for the first
+handful of pieces, not the whole file. A stall (no bytes for 45 s) surfaces as a playback error
+instead of an infinite spinner.
+
+**Metered connections.** The selector down-ranks files over 2 GB and flags the reason. The engine
+still fetches only the chosen file, so a magnet costs what the chosen file costs — not the torrent's
+total size.
 
 ## Build
 
@@ -143,7 +181,7 @@ predictor and its training loop.
 
 ## Tests
 
-`./gradlew testDebugUnitTest` runs 59 unit tests covering:
+`./gradlew testDebugUnitTest` runs 112 unit tests covering:
 
 * master/media playlist parsing, `#EXT-X-BYTERANGE`, `#EXT-X-MAP`, BOM/CRLF handling,
   relative/protocol-relative/awkward URL resolution,
@@ -155,6 +193,10 @@ predictor and its training loop.
 * the predictor: ranking, explanations, cold start, training convergence, that the untrainable
   `QUEUE_AGE` weight is left at its prior, temperature-bounded probabilities,
 * prefetch depth planning (top pick vs. warm starts vs. nothing at all),
+* magnet parsing (hex/base32 info hashes, `dn`/`tr`/`xl`, rejecting non-magnets),
+* torrent file classification (video vs. sample/trailer, `1080p`/`4K`/`2160p` tags, HEVC/HDR/remux),
+* quality selection (screen-vs-file height, decoder and storage limits, metered and slow links,
+  ordering, downgrade),
 * formatting helpers.
 
 ## Design notes
@@ -182,3 +224,7 @@ predictor and its training loop.
 * HLS variant switching during pre-cache (currently lowest or highest only).
 * Train on more signals (cast history, time-to-first-play) and calibrate the probabilities against
   real outcomes once there is usage data; a neural model is not worth it at this input size.
+* Torrents: trackers-less DHT-only magnets work but are slower to start; a "play the next file"
+  option for season packs, subtitles from the same torrent, and a per-device bitrate probe so the
+  selector can use measured throughput instead of a size heuristic.
+* Let the learned model rank *torrent files* too, once there is data on which picks people finish.

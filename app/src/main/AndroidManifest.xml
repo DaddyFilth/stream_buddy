@@ -62,6 +62,14 @@
                     android:scheme="streambuddy" />
             </intent-filter>
 
+            <!-- A magnet: link handed over by a browser, another app or a deep link. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="magnet" />
+            </intent-filter>
+
             <!-- Share a stream URL from a browser or another app straight into the queue. -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

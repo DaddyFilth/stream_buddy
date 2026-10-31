@@ -1,5 +1,7 @@
 package com.streambuddy.app.stream
 
+import com.streambuddy.app.torrent.MagnetLink
+
 /**
  * Works out what a share sheet or deep link is asking the app to do.
  *
@@ -15,6 +17,9 @@ object SharedLink {
     sealed interface Target {
         /** A stream URL to prefill the queue with. */
         data class Stream(val url: String) : Target
+
+        /** A `magnet:` link shared from a browser or torrent client. */
+        data class Magnet(val uri: String) : Target
 
         /** Open a specific tab (`queue`, `settings`, ...). */
         data class Tab(val route: String) : Target
@@ -32,10 +37,16 @@ object SharedLink {
      * @param sharedText the `EXTRA_TEXT` payload, if any.
      */
     fun parse(action: String?, dataString: String?, sharedText: String?): Target {
+        // A VIEW intent that carries a magnet link directly.
+        dataString?.let { raw ->
+            if (MagnetLink.looksLikeMagnet(raw)) return Target.Magnet(raw.trim())
+        }
+
         // Deep links first: streambuddy://queue and friends.
         dataString?.let { deepLink(it) }?.let { return it }
 
         sharedText?.let { text ->
+            extractMagnet(text)?.let { return Target.Magnet(it) }
             extractUrl(text)?.let { return Target.Stream(it) }
         }
 
@@ -63,6 +74,15 @@ object SharedLink {
             .trim('/')
             .lowercase()
         return if (route in KNOWN_TABS) Target.Tab(route) else null
+    }
+
+    /** Finds the first `magnet:?xt=…` token in [text], ending at whitespace or a quote. */
+    fun extractMagnet(text: String): String? {
+        val start = text.indexOf("magnet:?", ignoreCase = true)
+        if (start < 0) return null
+        val candidate = text.substring(start)
+            .takeWhile { !it.isWhitespace() && it != '"' && it != '<' && it != '>' && it != ')' }
+        return if (MagnetLink.parse(candidate) != null) candidate else null
     }
 
     /**

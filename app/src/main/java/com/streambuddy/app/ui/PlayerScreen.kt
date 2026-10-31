@@ -99,6 +99,13 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    playback.qualityNote?.let { note ->
+                        Text(
+                            text = "Quality: $note",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                     playback.error?.let { error ->
                         Text(
                             text = error,

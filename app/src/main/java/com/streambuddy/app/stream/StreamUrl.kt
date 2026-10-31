@@ -23,6 +23,10 @@ object StreamUrl {
     fun validate(raw: String): Result {
         val trimmed = raw.trim()
         if (trimmed.isEmpty()) return Result.Invalid("Enter a stream URL")
+        if (trimmed.startsWith("magnet:?", ignoreCase = true)) {
+            // Handled by the torrent queue before this point; here it only means "wrong field".
+            return Result.Invalid("Magnet links are added with the torrent box")
+        }
 
         val withScheme = if (SCHEME_PATTERN.containsMatchIn(trimmed)) trimmed else "https://$trimmed"
 

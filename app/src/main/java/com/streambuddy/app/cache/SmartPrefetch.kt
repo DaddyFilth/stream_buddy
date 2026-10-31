@@ -13,6 +13,7 @@ import com.streambuddy.app.data.SettingsRepository
 import com.streambuddy.app.data.StreamEntity
 import com.streambuddy.app.data.WatchEntity
 import com.streambuddy.app.stream.CacheState
+import com.streambuddy.app.stream.StreamKind
 
 /**
  * The Android glue around [PrefetchPredictor]: reads history out of Room, ranks the queue, and
@@ -33,6 +34,7 @@ object SmartPrefetch {
     suspend fun rankQueue(context: Context): List<Prediction> {
         if (!SettingsRepository.get(context).settings.value.smartPrefetch) return emptyList()
         val streams = AppDb.get(context).streams().allOnce()
+            .filter { it.streamKind != StreamKind.TORRENT }
         if (streams.isEmpty()) return emptyList()
         val history = history(context)
         val model = PredictorRepository.get(context).state.value.model

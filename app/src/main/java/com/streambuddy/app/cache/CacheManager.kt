@@ -10,6 +10,7 @@ import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import com.streambuddy.app.net.Http
+import com.streambuddy.app.torrent.TorrentDataSourceFactory
 import java.io.File
 
 /**
@@ -57,9 +58,16 @@ object CacheManager {
             .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
     }
 
-    /** Playback data source: cache-first for media, direct for manifests. */
+    /**
+     * Playback data source: torrents read from the BitTorrent engine, manifests go direct, and
+     * everything else is cache-first.
+     */
     fun playbackDataSource(context: Context): DataSource.Factory =
-        PlaybackDataSourceFactory(cacheDataSource(context), networkDataSource())
+        PlaybackDataSourceFactory(
+            cacheFactory = cacheDataSource(context),
+            networkFactory = networkDataSource(),
+            torrentFactory = TorrentDataSourceFactory(context.applicationContext),
+        )
 
     /** Bytes currently held on disk. Safe to call from any thread. */
     fun usageBytes(context: Context): Long = runCatching { get(context).cacheSpace }.getOrDefault(0L)

@@ -16,6 +16,9 @@ enum class StreamKind {
     /** A single progressive file (`.mp4`, `.mkv`, ...). */
     PROGRESSIVE,
 
+    /** A `magnet:` link: resolved and streamed by the built-in BitTorrent engine. */
+    TORRENT,
+
     /** Unknown extension; the engine sniffs the `Content-Type` before deciding. */
     UNKNOWN;
 
@@ -24,6 +27,7 @@ enum class StreamKind {
             HLS -> "HLS"
             DASH -> "DASH"
             PROGRESSIVE -> "File"
+            TORRENT -> "Torrent"
             UNKNOWN -> "Unknown"
         }
 

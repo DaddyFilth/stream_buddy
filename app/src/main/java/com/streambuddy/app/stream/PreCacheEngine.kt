@@ -66,6 +66,9 @@ class PreCacheEngine(
             StreamKind.DASH -> throw UnsupportedStreamException(
                 "DASH streams play cache-first but cannot be pre-cached yet.",
             )
+            StreamKind.TORRENT -> throw UnsupportedStreamException(
+                "Magnet links are downloaded by the torrent engine, not the HTTP pre-cache.",
+            )
             StreamKind.UNKNOWN -> throw UnsupportedStreamException(
                 "Couldn't tell what kind of stream this is. Use a .m3u8, .mpd or media file URL.",
             )

@@ -33,6 +33,11 @@
 -keepclassmembers class * implements androidx.media3.common.util.** { *; }
 -dontwarn androidx.media3.**
 
+# --- jlibtorrent (from its README) ---
+-keep class org.libtorrent4j.swig.libtorrent_jni { *; }
+-keep class com.frostwire.jlibtorrent.swig.** { *; }
+-dontwarn com.frostwire.jlibtorrent.**
+
 # --- OkHttp ---
 -dontwarn okhttp3.**
 -dontwarn okio.**

@@ -7,6 +7,9 @@ import org.junit.Test
 
 class SharedLinkTest {
 
+    private val hexHash = "c12fe1c06bba254a9dc9178d2d8b4b45a3f0f3c9"
+    private val magnet = "magnet:?xt=urn:btih:$hexHash&dn=Clip"
+
     private val actionView = "android.intent.action.VIEW"
     private val actionSend = "android.intent.action.SEND"
 
@@ -94,5 +97,36 @@ class SharedLinkTest {
     @Test
     fun knownTabsMatchTheNavGraph() {
         assertTrue(SharedLink.KNOWN_TABS.containsAll(setOf("apps", "queue", "player", "settings")))
+    }
+
+    @Test
+    fun aSharedMagnetBecomesATorrentTarget() {
+        val target = SharedLink.parse(
+            action = actionSend,
+            dataString = null,
+            sharedText = "Try this $magnet it is fast",
+        )
+        assertEquals(SharedLink.Target.Magnet(magnet), target)
+    }
+
+    @Test
+    fun aMagnetViewIntentBecomesATorrentTarget() {
+        val target = SharedLink.parse(action = actionView, dataString = magnet, sharedText = null)
+        assertEquals(SharedLink.Target.Magnet(magnet), target)
+    }
+
+    @Test
+    fun magnetExtractionIgnoresProseWithoutAHash() {
+        assertNull(SharedLink.extractMagnet("I love magnets:? they are fun"))
+    }
+
+    @Test
+    fun URLsStillWinWhenNoMagnetIsPresent() {
+        val target = SharedLink.parse(
+            action = actionSend,
+            dataString = null,
+            sharedText = "https://example.com/a.m3u8",
+        )
+        assertEquals(SharedLink.Target.Stream("https://example.com/a.m3u8"), target)
     }
 }

@@ -27,6 +27,9 @@ import com.streambuddy.app.stream.CacheState
 import com.streambuddy.app.stream.SharedLink
 import com.streambuddy.app.stream.StreamKind
 import com.streambuddy.app.stream.StreamUrl
+import com.streambuddy.app.torrent.MagnetLink
+import com.streambuddy.app.torrent.TorrentEngine
+import com.streambuddy.app.torrent.TorrentDataSourceFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -45,6 +48,8 @@ data class PlaybackUiState(
     val positionMs: Long = 0L,
     val durationMs: Long = 0L,
     val error: String? = null,
+    /** Why the torrent engine picked this file, e.g. "1080p matches this screen (1080p)". */
+    val qualityNote: String? = null,
 ) {
     val hasMedia: Boolean get() = streamId != null
 }
@@ -87,6 +92,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _sharedUrl = MutableStateFlow<String?>(null)
     val sharedUrl: StateFlow<String?> = _sharedUrl.asStateFlow()
 
+    /** Live BitTorrent state per info hash, for the queue rows. */
+    private val _torrentProgress = MutableStateFlow<Map<String, TorrentEngine.Progress>>(emptyMap())
+    val torrentProgress: StateFlow<Map<String, TorrentEngine.Progress>> = _torrentProgress.asStateFlow()
+
     /** A tab requested by a deep link, waiting for the nav host to consume it. */
     private val _requestedTab = MutableStateFlow<String?>(null)
     val requestedTab: StateFlow<String?> = _requestedTab.asStateFlow()
@@ -103,7 +112,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
      * written back as it plays.
      */
     val player: ExoPlayer = ExoPlayer.Builder(app)
-        .setMediaSourceFactory(DefaultMediaSourceFactory(CacheManager.cacheDataSource(app)))
+        .setMediaSourceFactory(DefaultMediaSourceFactory(CacheManager.playbackDataSource(app)))
         .setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus = */ true)
         .setHandleAudioBecomingNoisy(true)
         .build()
@@ -128,6 +137,27 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 }
             },
         )
+
+        // BitTorrent has no callbacks either: sample the engine once a second while any torrent is
+        // tracked, and stop polling when the queue has none.
+        viewModelScope.launch {
+            while (isActive) {
+                val torrents = streams.value.mapNotNull { stream ->
+                    if (stream.streamKind == StreamKind.TORRENT) MagnetLink.parse(stream.url) else null
+                }
+                if (torrents.isNotEmpty()) {
+                    val snapshot = withContext(Dispatchers.IO) {
+                        torrents.associate { magnet ->
+                            magnet.infoHashHex to TorrentEngine.progress(app, magnet)
+                        }
+                    }
+                    _torrentProgress.value = snapshot
+                } else if (_torrentProgress.value.isNotEmpty()) {
+                    _torrentProgress.value = emptyMap()
+                }
+                delay(POSITION_POLL_MS)
+            }
+        }
 
         // ExoPlayer has no position callback, so poll while something is loaded.
         viewModelScope.launch {
@@ -177,6 +207,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 true
             }
 
+            is SharedLink.Target.Magnet -> {
+                addMagnet(target.uri)
+                true
+            }
+
             is SharedLink.Target.Tab -> {
                 _requestedTab.value = target.route
                 true
@@ -201,6 +236,114 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             val stream = dao.findById(streamId) ?: return@launch
             play(stream)
             _requestedTab.value = "player"
+        }
+    }
+
+    // endregion
+
+    // region torrents
+
+    /**
+     * Adds a magnet link to the queue and starts resolving it. Returns `false` when the link is
+     * not a usable magnet.
+     */
+    fun addMagnet(raw: String, rawTitle: String = ""): Boolean {
+        val magnet = MagnetLink.parse(raw) ?: run {
+            post("That magnet link has no usable info hash")
+            return false
+        }
+        viewModelScope.launch {
+            val title = rawTitle.trim().ifBlank {
+                magnet.displayName?.takeIf { it.isNotBlank() }
+                    ?: "Torrent ${magnet.shortHash}"
+            }
+            val id = dao.insert(
+                StreamEntity(
+                    title = title,
+                    url = raw.trim(),
+                    kind = StreamKind.TORRENT.name,
+                    state = CacheState.QUEUED.name,
+                    prefetchMillis = settings.value.prefetchMillis,
+                ),
+            )
+            withContext(Dispatchers.IO) { TorrentEngine.ensure(app, magnet) }
+            post("Added “$title” — finding peers…")
+            focusStream(id)
+        }
+        return true
+    }
+
+    /**
+     * Plays the best file inside a torrent.
+     *
+     * Metadata can take a few seconds, so the state is updated as it arrives: "finding peers",
+     * then the chosen file and why, then playback.
+     */
+    private suspend fun playMagnet(stream: StreamEntity) {
+        val magnet = MagnetLink.parse(stream.url) ?: run {
+            post("This entry is not a valid magnet link")
+            return
+        }
+        // Record the previous watch session before switching, as the HTTP path does.
+        finishSession()
+        _playback.value = PlaybackUiState(
+            streamId = stream.id,
+            title = stream.title,
+            url = stream.url,
+            kind = StreamKind.TORRENT,
+            isBuffering = true,
+        )
+
+        val selection = withContext(Dispatchers.IO) { TorrentEngine.prepare(app, magnet) }
+        if (selection == null) {
+            _playback.update {
+                it.copy(isBuffering = false, error = "No peers found for this magnet")
+            }
+            post("No peers found for “${stream.title}”")
+            return
+        }
+
+        val chosen = selection.chosen
+        val mime = when (chosen.file.extension) {
+            "mp4", "m4v" -> MimeTypes.VIDEO_MP4
+            "mkv" -> MimeTypes.VIDEO_MATROSKA
+            "webm" -> MimeTypes.VIDEO_WEBM
+            "ts", "m2ts" -> MimeTypes.VIDEO_MP2T
+            "mov" -> MimeTypes.VIDEO_MP4
+            "avi" -> MimeTypes.VIDEO_AVI
+            else -> null
+        }
+        val item = MediaItem.Builder()
+            .setUri(TorrentDataSourceFactory.uriFor(magnet, chosen.file.index))
+            .apply { if (mime != null) setMimeType(mime) }
+            .build()
+
+        session = WatchSession(
+            streamId = stream.id,
+            title = stream.title,
+            startedAtMs = System.currentTimeMillis(),
+        )
+        sessionMaxPositionMs = 0L
+        player.setMediaItem(item)
+        player.prepare()
+        player.playWhenReady = true
+        _playback.update {
+            it.copy(
+                isBuffering = true,
+                error = null,
+                // Surfaced in the player subtitle so the choice is visible, not magic.
+                qualityNote = chosen.reasons.firstOrNull(),
+            )
+        }
+        post("Playing ${chosen.file.name}")
+    }
+
+    /** Stops and forgets a torrent, keeping the downloaded files. */
+    fun stopTorrent(stream: StreamEntity) {
+        val magnet = MagnetLink.parse(stream.url) ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { TorrentEngine.stop(app, magnet) }
+            post("Stopped “${stream.title}”")
         }
     }
 
@@ -233,6 +376,16 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun startCaching(stream: StreamEntity) {
+        if (stream.streamKind == StreamKind.TORRENT) {
+            val magnet = MagnetLink.parse(stream.url)
+            if (magnet != null) {
+                viewModelScope.launch {
+                    withContext(Dispatchers.IO) { TorrentEngine.ensure(app, magnet) }
+                    post("Fetching “${stream.title}” over BitTorrent")
+                }
+            }
+            return
+        }
         viewModelScope.launch {
             dao.resetForCaching(
                 id = stream.id,
@@ -246,6 +399,10 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun cancelCaching(stream: StreamEntity) {
+        if (stream.streamKind == StreamKind.TORRENT) {
+            stopTorrent(stream)
+            return
+        }
         PreCacheWorker.cancel(app, stream.id)
         viewModelScope.launch {
             dao.updateState(
@@ -258,6 +415,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteStream(stream: StreamEntity) {
+        if (stream.streamKind == StreamKind.TORRENT) {
+            MagnetLink.parse(stream.url)?.let { magnet ->
+                viewModelScope.launch { withContext(Dispatchers.IO) { TorrentEngine.stop(app, magnet) } }
+            }
+        }
         PreCacheWorker.cancel(app, stream.id)
         if (_playback.value.streamId == stream.id) stopPlayback()
         viewModelScope.launch { dao.deleteById(stream.id) }
@@ -268,13 +430,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     // region playback
 
     fun play(stream: StreamEntity) {
+        if (stream.streamKind == StreamKind.TORRENT) {
+            viewModelScope.launch { playMagnet(stream) }
+            return
+        }
         val mediaItem = MediaItem.Builder()
             .setUri(stream.url)
             .apply {
                 when (stream.streamKind) {
                     StreamKind.HLS -> setMimeType(MimeTypes.APPLICATION_M3U8)
                     StreamKind.DASH -> setMimeType(MimeTypes.APPLICATION_MPD)
-                    StreamKind.PROGRESSIVE, StreamKind.UNKNOWN -> Unit
+                    StreamKind.PROGRESSIVE, StreamKind.TORRENT, StreamKind.UNKNOWN -> Unit
                 }
             }
             .build()

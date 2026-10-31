@@ -49,6 +49,12 @@ android {
         versionName = "1.0.0"
         vectorDrawables.useSupportLibrary = true
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // libtorrent ships a native library per ABI. Shipping only the two that matter keeps the
+        // APK ~40 MB smaller; Play's app bundle splits per device anyway.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
     }
 
     signingConfigs {
@@ -167,6 +173,9 @@ dependencies {
     // media3-datasource-cache artifact.
     implementation("androidx.media3:media3-datasource:1.4.1")
     implementation("androidx.media3:media3-database:1.4.1")
+
+    // BitTorrent: Java API + native library for every ABI in one AAR, with its own keep rules.
+    implementation("com.frostwire:jlibtorrent-android:2.0.15.3")
 
     // Networking / coroutines
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

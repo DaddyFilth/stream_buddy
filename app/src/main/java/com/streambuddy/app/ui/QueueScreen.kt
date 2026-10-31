@@ -45,6 +45,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.streambuddy.app.ai.Prediction
 import com.streambuddy.app.data.StreamEntity
 import com.streambuddy.app.stream.CacheState
+import com.streambuddy.app.stream.StreamKind
+import com.streambuddy.app.torrent.MagnetLink
+import com.streambuddy.app.torrent.TorrentEngine
 
 /** Add streams to the pre-play queue and watch their cache state. */
 @Composable
@@ -56,9 +59,11 @@ fun QueueScreen(
     val streams by viewModel.streams.collectAsStateWithLifecycle()
     val predictions by viewModel.predictions.collectAsStateWithLifecycle()
     val sharedUrl by viewModel.sharedUrl.collectAsStateWithLifecycle()
+    val torrentProgress by viewModel.torrentProgress.collectAsStateWithLifecycle()
     var url by rememberSaveable { mutableStateOf("") }
     var title by rememberSaveable { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<StreamEntity?>(null) }
+    var magnet by rememberSaveable { mutableStateOf("") }
 
     // A URL shared from another app (or a deep link) pre-fills the field once, then is cleared.
     LaunchedEffect(sharedUrl) {
@@ -123,6 +128,51 @@ fun QueueScreen(
             }
         }
 
+        item {
+            ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        text = "Play from a magnet link",
+                        style = MaterialTheme.typography.titleSmall,
+                    )
+                    Text(
+                        text = "Paste a magnet: link and Stream Buddy resolves it over BitTorrent, " +
+                            "picks the file that suits this screen and network, and starts " +
+                            "playing while it downloads.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    OutlinedTextField(
+                        value = magnet,
+                        onValueChange = { magnet = it },
+                        label = { Text("magnet:?xt=urn:btih:…") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(
+                        onClick = {
+                            if (viewModel.addMagnet(magnet)) magnet = ""
+                        },
+                        enabled = magnet.isNotBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Add torrent")
+                    }
+                    Text(
+                        text = "BitTorrent is a general-purpose protocol — use it for content you " +
+                            "have the right to access.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
         if (streams.isEmpty()) {
             item {
                 EmptyState(
@@ -135,6 +185,8 @@ fun QueueScreen(
                 StreamCard(
                     stream = stream,
                     prediction = predictions[stream.id],
+                    torrent = MagnetLink.parse(stream.url)
+                        ?.let { magnet -> torrentProgress[magnet.infoHashHex] },
                     onPlay = { onPlay(stream) },
                     onCache = { viewModel.startCaching(stream) },
                     onCancel = { viewModel.cancelCaching(stream) },
@@ -196,6 +248,7 @@ private fun SmartPickNote(prediction: Prediction) {
 private fun StreamCard(
     stream: StreamEntity,
     prediction: Prediction?,
+    torrent: TorrentEngine.Progress?,
     onPlay: () -> Unit,
     onCache: () -> Unit,
     onCancel: () -> Unit,
@@ -237,15 +290,51 @@ private fun StreamCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            when {
-                state == CacheState.CACHING && percent != null -> LinearProgressIndicator(
-                    progress = { percent / 100f },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+            if (torrent != null) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (!torrent.running) {
+                        Text(
+                            text = "Not downloading — press Play to resolve and stream it",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else if (!torrent.hasMetadata) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            text = "Finding peers and metadata…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            progress = { torrent.progressPercent / 100f },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            text = buildString {
+                                append("${torrent.progressPercent}%")
+                                if (torrent.fileName != null) append(" · ${torrent.fileName}")
+                                append(" · ${torrent.seeds} seeds / ${torrent.peers} peers")
+                                if (torrent.downloadRateBps > 0L) {
+                                    append(" · ${torrent.downloadRateBps / 1024} KB/s")
+                                }
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            } else {
+                when {
+                    state == CacheState.CACHING && percent != null -> LinearProgressIndicator(
+                        progress = { percent / 100f },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
 
-                state == CacheState.CACHING -> LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                    state == CacheState.CACHING -> LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
             }
 
             if (prediction != null) {
@@ -287,7 +376,13 @@ private fun StreamCard(
                     OutlinedButton(onClick = onCancel) { Text("Cancel") }
                 } else {
                     OutlinedButton(onClick = onCache) {
-                        Text(if (state == CacheState.QUEUED) "Pre-play" else "Retry")
+                        Text(
+                            when {
+                                stream.streamKind == StreamKind.TORRENT -> "Fetch now"
+                                state == CacheState.QUEUED -> "Pre-play"
+                                else -> "Retry"
+                            },
+                        )
                     }
                 }
 
