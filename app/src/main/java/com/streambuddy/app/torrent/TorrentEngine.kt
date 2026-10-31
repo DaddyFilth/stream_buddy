@@ -53,6 +53,8 @@ object TorrentEngine {
         val magnet: MagnetLink,
         val selection: QualitySelector.Selection?,
         val progress: Progress,
+        /** Set when the user overrides the automatic pick via [switchTo]. */
+        val preferredFileIndex: Int? = null,
     )
 
     /** Snapshot of a torrent for the queue and player UI. */
@@ -195,6 +197,36 @@ object TorrentEngine {
         return selection
     }
 
+    /**
+     * Re-prioritises the torrent so that [fileIndex] is the only file downloading.
+     *
+     * Used when the user overrides the automatic pick. Blocking; call from a background dispatcher.
+     */
+    fun switchTo(context: Context, magnet: MagnetLink, fileIndex: Int): Boolean {
+        val handle = handle(context, magnet.infoHashHex) ?: return false
+        val info = handle.torrentFile() ?: return false
+        val count = info.files().numFiles()
+        if (fileIndex !in 0 until count) return false
+        val priorities = Array(count) { index ->
+            if (index == fileIndex) Priority.NORMAL else Priority.IGNORE
+        }
+        val switched = try {
+            handle.prioritizeFiles(priorities)
+            true
+        } catch (_: Exception) {
+            false
+        }
+        if (switched) {
+            synchronized(tracked) {
+                val current = tracked[magnet.infoHashHex]
+                if (current != null) {
+                    tracked[magnet.infoHashHex] = current.copy(preferredFileIndex = fileIndex)
+                }
+            }
+        }
+        return switched
+    }
+
     /** The selection made by [prepare], if the torrent is ready. */
     fun selectionFor(infoHashHex: String): QualitySelector.Selection? =
         synchronized(tracked) { tracked[infoHashHex]?.selection }
@@ -274,7 +306,11 @@ object TorrentEngine {
             ?: return trackedEntry.progress
         val status = handle.status()
         val hasMetadata = status.hasMetadata()
-        val selected = trackedEntry.selection?.chosen?.file
+        val selected = trackedEntry.preferredFileIndex
+            ?.let { index ->
+                trackedEntry.selection?.alternatives?.firstOrNull { it.file.index == index }?.file
+            }
+            ?: trackedEntry.selection?.chosen?.file
         val total = selected?.sizeBytes ?: status.totalWanted()
         val done = selected?.let { file -> fileProgressBytes(handle, file) } ?: status.totalWantedDone()
         val percent = if (total > 0L) ((done * 100L) / total).toInt().coerceIn(0, 100) else 0

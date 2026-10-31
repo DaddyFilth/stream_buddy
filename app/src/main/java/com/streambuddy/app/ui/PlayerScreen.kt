@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -50,6 +51,7 @@ import com.streambuddy.app.util.Format
 fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val playback by viewModel.playback.collectAsStateWithLifecycle()
     val streams by viewModel.streams.collectAsStateWithLifecycle()
+    val torrentFiles by viewModel.torrentFiles.collectAsStateWithLifecycle()
 
     Column(modifier = modifier.fillMaxSize()) {
         Column(
@@ -105,6 +107,29 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                         )
+                    }
+                    if (torrentFiles.size > 1) {
+                        Text(
+                            text = "Files in this torrent",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            torrentFiles.take(3).forEach { suggestion ->
+                                FilterChip(
+                                    selected = suggestion.file.index == playback.fileIndex,
+                                    onClick = { viewModel.playTorrentAlternative(suggestion.file.index) },
+                                    label = {
+                                        Text(
+                                            text = suggestion.file.advertisedHeight?.let { "${it}p" }
+                                                ?: suggestion.file.name.take(14),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    },
+                                )
+                            }
+                        }
                     }
                     playback.error?.let { error ->
                         Text(

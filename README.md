@@ -107,6 +107,10 @@ readahead, and blocks that read until the pieces land. The first frame therefore
 handful of pieces, not the whole file. A stall (no bytes for 45 s) surfaces as a playback error
 instead of an infinite spinner.
 
+**The pick is a suggestion, not a verdict.** The player shows the files the selector considered as
+quality chips ("1080p", "720p", …); tapping one re-prioritises libtorrent onto that file and plays
+it. Nothing is hidden behind the score.
+
 **Metered connections.** The selector down-ranks files over 2 GB and flags the reason. The engine
 still fetches only the chosen file, so a magnet costs what the chosen file costs — not the torrent's
 total size.

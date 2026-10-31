@@ -28,6 +28,7 @@ import com.streambuddy.app.stream.SharedLink
 import com.streambuddy.app.stream.StreamKind
 import com.streambuddy.app.stream.StreamUrl
 import com.streambuddy.app.torrent.MagnetLink
+import com.streambuddy.app.torrent.QualitySelector
 import com.streambuddy.app.torrent.TorrentEngine
 import com.streambuddy.app.torrent.TorrentDataSourceFactory
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +51,8 @@ data class PlaybackUiState(
     val error: String? = null,
     /** Why the torrent engine picked this file, e.g. "1080p matches this screen (1080p)". */
     val qualityNote: String? = null,
+    /** Which file of the torrent is playing, so the player can mark the active quality. */
+    val fileIndex: Int? = null,
 ) {
     val hasMedia: Boolean get() = streamId != null
 }
@@ -95,6 +98,13 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     /** Live BitTorrent state per info hash, for the queue rows. */
     private val _torrentProgress = MutableStateFlow<Map<String, TorrentEngine.Progress>>(emptyMap())
     val torrentProgress: StateFlow<Map<String, TorrentEngine.Progress>> = _torrentProgress.asStateFlow()
+
+    /**
+     * Every playable file in the torrent that is on screen right now, best first, so the player
+     * can offer "this one instead" when the automatic pick is not what you wanted.
+     */
+    private val _torrentFiles = MutableStateFlow<List<QualitySelector.Suggestion>>(emptyList())
+    val torrentFiles: StateFlow<List<QualitySelector.Suggestion>> = _torrentFiles.asStateFlow()
 
     /** A tab requested by a deep link, waiting for the nav host to consume it. */
     private val _requestedTab = MutableStateFlow<String?>(null)
@@ -303,7 +313,17 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             return
         }
 
-        val chosen = selection.chosen
+        startTorrentPlayback(stream, magnet, selection.chosen)
+        _torrentFiles.value = selection.alternatives
+    }
+
+    /** Points the player at one specific file inside an already-resolved torrent. */
+    private fun startTorrentPlayback(
+        stream: StreamEntity,
+        magnet: MagnetLink,
+        suggestion: QualitySelector.Suggestion,
+    ) {
+        val chosen = suggestion
         val mime = when (chosen.file.extension) {
             "mp4", "m4v" -> MimeTypes.VIDEO_MP4
             "mkv" -> MimeTypes.VIDEO_MATROSKA
@@ -333,9 +353,28 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                 error = null,
                 // Surfaced in the player subtitle so the choice is visible, not magic.
                 qualityNote = chosen.reasons.firstOrNull(),
+                fileIndex = chosen.file.index,
             )
         }
         post("Playing ${chosen.file.name}")
+    }
+
+    /** Plays a different file from the current torrent, e.g. a smaller copy of the same film. */
+    fun playTorrentAlternative(fileIndex: Int) {
+        val suggestion = _torrentFiles.value.firstOrNull { it.file.index == fileIndex } ?: return
+        val current = _playback.value
+        val stream = streams.value.firstOrNull { it.id == current.streamId } ?: return
+        val magnet = MagnetLink.parse(stream.url) ?: return
+        viewModelScope.launch {
+            val switched = withContext(Dispatchers.IO) {
+                TorrentEngine.switchTo(app, magnet, fileIndex)
+            }
+            if (!switched) {
+                post("That file is not available in this torrent")
+                return@launch
+            }
+            startTorrentPlayback(stream, magnet, suggestion)
+        }
     }
 
     /** Stops and forgets a torrent, keeping the downloaded files. */
@@ -446,6 +485,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             .build()
 
         finishSession()
+        _torrentFiles.value = emptyList()
         session = WatchSession(
             streamId = stream.id,
             title = stream.title,
@@ -482,6 +522,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         finishSession()
         player.stop()
         player.clearMediaItems()
+        _torrentFiles.value = emptyList()
         _playback.value = PlaybackUiState()
     }
 
