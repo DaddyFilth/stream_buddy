@@ -22,7 +22,7 @@ class PredictorRepository private constructor(context: Context) {
         .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private val _state = MutableStateFlow(read())
-    val state: StateFlow<PredictorPrefetchState> = _state.asStateFlow()
+    val state: StateFlow<ModelStatus> = _state.asStateFlow()
 
     /** Fits the model on [events] (on a background thread) and stores the result. */
     suspend fun learn(events: List<WatchEvent>): PrefetchPredictor.ModelState =
@@ -32,7 +32,7 @@ class PredictorRepository private constructor(context: Context) {
             }
             val trained = PrefetchPredictor.train(events, _state.value.model)
             write(trained)
-            _state.value = PrefetchPredictorState(trained, _state.value.historyCount)
+            _state.value = ModelStatus(trained, events.size)
             trained
         }
 
@@ -40,14 +40,14 @@ class PredictorRepository private constructor(context: Context) {
     fun noteHistorySize(count: Int) {
         val current = _state.value
         if (current.historyCount != count) {
-            _state.value = PrefetchPredictorState(current.model, count)
+            _state.value = ModelStatus(current.model, count)
         }
     }
 
     /** Forgets everything learned and goes back to the hand-tuned priors. */
     fun reset() {
         prefs.edit { remove(KEY_WEIGHTS).remove(KEY_TRAINED_ON) }
-        _state.value = PrefetchPredictorState(PrefetchPredictor.ModelState.prior(), 0)
+        _state.value = ModelStatus(PrefetchPredictor.ModelState.prior(), 0)
     }
 
     private fun write(model: PrefetchPredictor.ModelState) {
@@ -57,7 +57,7 @@ class PredictorRepository private constructor(context: Context) {
         }
     }
 
-    private fun read(): PredictorPrefetchState {
+    private fun read(): ModelStatus {
         val weights = prefs.getString(KEY_WEIGHTS, null)
             ?.split(',')
             ?.mapNotNull { it.trim().toDoubleOrNull() }
@@ -68,7 +68,7 @@ class PredictorRepository private constructor(context: Context) {
         } else {
             PrefetchPredictor.ModelState(weights, trainedOn, 0L)
         }
-        return PredictorPrefetchState(model, trainedOn)
+        return ModelStatus(model, trainedOn)
     }
 
     companion object {
@@ -86,7 +86,7 @@ class PredictorRepository private constructor(context: Context) {
 }
 
 /** Model plus the number of playbacks it has seen, for the Settings screen. */
-data class PredictorPrefetchState(
+data class ModelStatus(
     val model: PrefetchPredictor.ModelState,
     val historyCount: Int,
 )

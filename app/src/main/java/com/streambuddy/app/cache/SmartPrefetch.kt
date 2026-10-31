@@ -68,8 +68,9 @@ object SmartPrefetch {
     suspend fun refreshModel(context: Context) {
         val dao = AppDb.get(context).watchHistory()
         val history = dao.recent(HISTORY_LIMIT).map { it.toEvent() }
-        PredictorRepository.get(context).learn(history)
-        PredictorRepository.get(context).noteHistorySize(history.size)
+        val repository = PredictorRepository.get(context)
+        repository.learn(history)
+        repository.noteHistorySize(history.size)
     }
 
     suspend fun history(context: Context): List<WatchEvent> =
