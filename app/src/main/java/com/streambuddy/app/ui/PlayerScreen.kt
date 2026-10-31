@@ -41,6 +41,9 @@ import com.streambuddy.app.util.Format
 /**
  * Cache-first playback (the ExoPlayer instance in [MainViewModel] reads through the same store that
  * pre-caching fills) plus a shortcut list of everything in the queue.
+ *
+ * The [PlayerView] sits above the list instead of inside it: a LazyColumn would dispose the video
+ * surface as soon as the queue scrolls it off screen.
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
@@ -48,20 +51,17 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val playback by viewModel.playback.collectAsStateWithLifecycle()
     val streams by viewModel.streams.collectAsStateWithLifecycle()
 
-    LazyColumn(
-        modifier = modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        item {
+    Column(modifier = modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             SectionHeader(
                 title = "Player",
                 subtitle = "Anything that was pre-cached starts from disk; the rest streams and is " +
                     "cached as it plays.",
             )
-        }
 
-        item {
             if (playback.hasMedia) {
                 AndroidView(
                     factory = { context ->
@@ -77,18 +77,7 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                         .clip(MaterialTheme.shapes.medium)
                         .background(Color.Black),
                 )
-            } else {
-                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
-                    EmptyState(
-                        title = "Nothing playing",
-                        detail = "Pick a stream below, or press Play on an entry in the Queue tab.",
-                    )
-                }
-            }
-        }
 
-        if (playback.hasMedia) {
-            item {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text(
                         text = playback.title,
@@ -118,9 +107,7 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                         )
                     }
                 }
-            }
 
-            item {
                 val fraction = if (playback.durationMs > 0L) {
                     (playback.positionMs.toFloat() / playback.durationMs.toFloat()).coerceIn(0f, 1f)
                 } else {
@@ -130,13 +117,8 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     progress = { fraction },
                     modifier = Modifier.fillMaxWidth(),
                 )
-            }
 
-            item {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilledTonalButton(onClick = viewModel::togglePlayPause) {
                         Icon(
                             imageVector = Icons.Filled.PlayArrow,
@@ -150,31 +132,42 @@ fun PlayerScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                     }
                     OutlinedButton(onClick = viewModel::stopPlayback) { Text("Stop") }
                 }
+            } else {
+                ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                    EmptyState(
+                        title = "Nothing playing",
+                        detail = "Pick a stream below, or press Play on an entry in the Queue tab.",
+                    )
+                }
             }
         }
 
-        item {
-            Text(
-                text = "From your queue",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(top = 8.dp),
-            )
-        }
+        Text(
+            text = "From your queue",
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier.padding(horizontal = 16.dp),
+        )
 
-        if (streams.isEmpty()) {
-            item {
-                EmptyState(
-                    title = "Queue is empty",
-                    detail = "Add a stream on the Queue tab and it shows up here.",
-                )
-            }
-        } else {
-            items(streams, key = { it.id }) { stream ->
-                PlayerQueueRow(
-                    stream = stream,
-                    isCurrent = playback.streamId == stream.id,
-                    onClick = { viewModel.play(stream) },
-                )
+        LazyColumn(
+            modifier = Modifier.weight(1f),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (streams.isEmpty()) {
+                item {
+                    EmptyState(
+                        title = "Queue is empty",
+                        detail = "Add a stream on the Queue tab and it shows up here.",
+                    )
+                }
+            } else {
+                items(streams, key = { it.id }) { stream ->
+                    PlayerQueueRow(
+                        stream = stream,
+                        isCurrent = playback.streamId == stream.id,
+                        onClick = { viewModel.play(stream) },
+                    )
+                }
             }
         }
     }
