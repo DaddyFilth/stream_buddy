@@ -92,9 +92,15 @@ jobs:
           echo "::error::Kotlin compile errors: ${total:-0}"
           grep -E '^e: ' ci.log | sed -E 's|file:///[^ ]*/app/|app/|' | sort -u | head -30 \
             | while IFS= read -r line; do printf '::error::%s\n' "$line"; done
-          grep -E 'FAILED|There were failing tests|Execution failed for task|Lint found|Error: ' ci.log \
+          grep -E 'FAILED|There were failing tests|Execution failed for task|Lint found' ci.log \
             | grep -vE '^e: ' | sed -E 's/^ +//' | sort -u | head -8 \
             | while IFS= read -r line; do printf '::error::%s\n' "$line"; done
+          # Every lint error, one annotation each.
+          if [ -f app/build/reports/lint-results-debug.txt ]; then
+            grep -E '^[^ ].*: (Error|Warning): ' app/build/reports/lint-results-debug.txt \
+              | sed -E 's|/home/runner/work/stream_buddy/stream_buddy/||' | sort -u | head -14 \
+              | while IFS= read -r line; do printf '::error::%s\n' "$line"; done
+          fi
           sed -n '/What went wrong:/,/Try:/p' ci.log | sed -E 's/^ +//' | grep -v '^$' | head -12 \
             | while IFS= read -r line; do printf '::error::%s\n' "$line"; done
 

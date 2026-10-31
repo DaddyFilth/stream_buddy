@@ -1,13 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Auto Backup (API 24-30). The queue and learned weights are worth restoring; the media cache is
-  large and rebuildable, so it stays out of the backup.
+  Auto Backup (API 24-30). The queue and the learned weights are worth restoring; the media cache
+  is large and rebuildable, so it is not listed and therefore not backed up (adding any <include>
+  means "include only these").
 -->
 <full-backup-content>
     <include domain="database" path="streambuddy.db" />
     <include domain="sharedpref" path="stream_buddy_settings.xml" />
     <include domain="sharedpref" path="stream_buddy_predictor.xml" />
-    <exclude domain="file" path="." />
-    <exclude domain="cache" path="." />
-    <exclude domain="external" path="." />
 </full-backup-content>

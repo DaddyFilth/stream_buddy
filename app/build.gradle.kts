@@ -121,6 +121,9 @@ android {
         abortOnError = true
         warningsAsErrors = false
         checkReleaseBuilds = false
+        // Plain-text report so CI can surface every error as a check annotation.
+        textReport = true
+        textOutput = File(project.layout.buildDirectory.get().asFile, "reports/lint-results-debug.txt")
         disable += setOf("AndroidGradlePluginVersion", "GradleDependency", "NewerVersionAvailable")
     }
 }
