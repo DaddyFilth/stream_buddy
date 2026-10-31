@@ -106,7 +106,8 @@ private class TorrentDataSource(private val context: Context) : DataSource {
         if (read <= 0) return C.RESULT_END_OF_INPUT
         position += read
         remaining -= read
-        dataSpec?.let { spec -> listener?.onBytesTransferred(this, spec, read) }
+        // Local disk read, not a network transfer: keep ExoPlayer's bandwidth estimate honest.
+        dataSpec?.let { spec -> listener?.onBytesTransferred(this, spec, false, read) }
         return read
     }
 
