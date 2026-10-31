@@ -27,7 +27,8 @@ the limitations below.
 | **DRM** | FairPlay, Widevine, PlayReady and CENC are detected from the playlist/manifest and never cached. Ordinary HLS `AES-128` encryption is *not* DRM and stays cacheable. |
 | **Playback** | ExoPlayer reads through the same cache, so pre-cached data is used immediately and everything else is cached as it plays (HLS segments always; progressive files when the server reports a length). HLS/DASH manifests deliberately bypass the cache so live playlists never go stale. |
 | **Apps** | Lists launchable apps with streaming services first; tapping one opens it. DRM services only play inside their own app, so Stream Buddy launches them instead of pretending it can cache them. |
-| **Settings** | Pre-play window, cache quality (lowest/highest HLS variant), cache usage and clearing, notification permission, version/about. |
+| **Smart pre-cache** | An on-device model ranks the queue, predicts which stream you will open next (series + episode order, recency, how often you finish, time of day) and pre-caches the best guess deeply and two runner-ups shallowly — on Wi-Fi, while charging. Every prediction shows the reasons behind it and can be switched off. |
+| **Settings** | Smart pre-cache on/off + model status, pre-play window, cache quality (lowest/highest HLS variant), cache usage and clearing, notification permission, version/about. |
 
 ## Honest limitations
 
@@ -41,6 +42,36 @@ the limitations below.
   `MediaSessionService`/notification transport controls are published yet.
 * Cache eviction is LRU inside a fixed 2 GB budget (`CacheManager.MAX_BYTES`); deleting a queue
   entry does not evict its cached segments directly — "Clear cache" in Settings does.
+
+## What the "AI" actually is
+
+No cloud, no LLM, no data leaving the phone. Pre-play caching needs a decision in milliseconds,
+offline, on a device with no reliable GPU access — so the model is a nine-feature logistic
+regressor (`ai/PrefetchPredictor.kt`, ~350 lines) that starts from hand-tuned priors and refits
+itself from the playbacks recorded on this device:
+
+| Feature | What it captures |
+| --- | --- |
+| `NEXT_EPISODE` | the queued stream is SxxEyy right after what you last watched |
+| `SAME_SERIES` | same show/film as your last session |
+| `RECENCY` | how long ago this series was last played (72 h half-life) |
+| `FREQUENCY` | how often you come back to it |
+| `COMPLETION` | whether you usually finish it (abandoned titles rank lower) |
+| `TIME_OF_DAY`, `WEEKDAY` | circular statistics over when you normally watch it |
+| `QUEUE_AGE` | how recently you added it (14-day half-life) |
+| `BIAS` | baseline appetite for anything new |
+
+Training is 40 SGD epochs with L2, fitted on a background thread after each finished session, using
+only events that preceded each sample (no peeking at the future). Fewer than 8 recorded playbacks
+and the weights stay at their priors, which the Settings screen states plainly ("Learning" vs
+"Personalised"). Probabilities are temperature-scaled (T = 1.7) so a nine-input model never claims
+99 % certainty.
+
+The prediction changes the *plan*, not the cache limit: the top pick gets
+`base × (0.5 + probability)` clamped to 2–20 minutes, two runner-ups get a 2-minute warm start so a
+wrong guess wastes very little, and the periodic pass only runs on an unmetered network while
+charging (`SmartPrefetchWorker`). With smart pre-cache off, the app behaves exactly as before:
+everything you queue is cached with your configured window.
 
 ## Build
 
@@ -69,10 +100,20 @@ app/src/main/java/com/streambuddy/app/
 ├── cache/
 │   ├── CacheManager.kt          the single Media3 SimpleCache + data source factories
 │   ├── PlaybackDataSource.kt    cache-first for media, direct for manifests
+│   ├── SmartPrefetch.kt         ranks the queue, records sessions, refits the model
+│   ├── SmartPrefetchScheduler.kt periodic prediction pass (unmetered + charging)
+│   ├── AppScope.kt              process scope for writes that outlive a view model
 │   └── PreCacheWorker.kt        WorkManager job: progress → Room + notification
 ├── data/
-│   ├── AppDb.kt                 Room entity/DAO/database for the queue
+│   ├── AppDb.kt                 Room entities/DAOs for the queue and watch history
+│   ├── WatchHistory.kt          recorded playback sessions (the training data)
+│   ├── PredictorRepository.kt   persisted model weights
 │   └── SettingsRepository.kt    SharedPreferences-backed settings as a StateFlow
+├── ai/                          on-device prediction (pure Kotlin, unit-tested)
+│   ├── Models.kt                watch events, candidates, predictions
+│   ├── SeriesMatcher.kt         "Show S02E05" / "show.2x05" → series + episode
+│   ├── PrefetchPredictor.kt     features, logistic regression, SGD training
+│   └── PrefetchPlan.kt          prediction → how many minutes to cache
 ├── net/Http.kt                  shared OkHttp client
 ├── stream/
 │   ├── HlsPlaylistParser.kt     RFC 8216 subset: variants, segments, byte ranges, maps
@@ -96,18 +137,24 @@ app/src/main/java/com/streambuddy/app/
 └── util/Format.kt               byte/duration/percent formatting
 ```
 
-Everything in `stream/` (except `PreCacheEngine`/`StreamFetcher`) and `util/` is plain JVM Kotlin
-with no Android dependencies, which is what `app/src/test` exercises.
+Everything in `stream/` (except `PreCacheEngine`/`StreamFetcher`), `ai/` and `util/` is plain JVM
+Kotlin with no Android dependencies, which is what `app/src/test` exercises — including the
+predictor and its training loop.
 
 ## Tests
 
-`./gradlew testDebugUnitTest` runs 37 unit tests covering:
+`./gradlew testDebugUnitTest` runs 59 unit tests covering:
 
 * master/media playlist parsing, `#EXT-X-BYTERANGE`, `#EXT-X-MAP`, BOM/CRLF handling,
   relative/protocol-relative/awkward URL resolution,
 * DRM detection (including "AES-128 is not DRM"),
 * pre-play segment planning for VOD and live,
 * URL validation and stream-kind detection,
+* series/episode parsing (`S02E05`, `2x05`, `Episode 5`, movies as their own series) and
+  "is this the next episode" logic,
+* the predictor: ranking, explanations, cold start, training convergence, that the untrainable
+  `QUEUE_AGE` weight is left at its prior, temperature-bounded probabilities,
+* prefetch depth planning (top pick vs. warm starts vs. nothing at all),
 * formatting helpers.
 
 ## Design notes
@@ -123,6 +170,9 @@ with no Android dependencies, which is what `app/src/test` exercises.
   those responses would serve a stale playlist and stall live playback.
 * **No foreground service.** WorkManager runs the pre-cache job with a network constraint; it is
   resumable, so a stopped job simply continues where it left off on retry.
+* **The model never decides *what* you may watch** — it only decides what is worth downloading
+  early. It is trained on this device's history, stored in SharedPreferences as nine doubles, and
+  reset from Settings. With no history it degrades to fixed priorities rather than guessing wildly.
 
 ## Roadmap
 
@@ -130,3 +180,5 @@ with no Android dependencies, which is what `app/src/test` exercises.
 * `MediaSessionService` for background audio and lock-screen controls.
 * Per-stream cache eviction, configurable cache budget.
 * HLS variant switching during pre-cache (currently lowest or highest only).
+* Train on more signals (cast history, time-to-first-play) and calibrate the probabilities against
+  real outcomes once there is usage data; a neural model is not worth it at this input size.

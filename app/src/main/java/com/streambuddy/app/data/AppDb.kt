@@ -62,6 +62,10 @@ interface StreamDao {
     @Query("SELECT * FROM streams ORDER BY addedAt DESC")
     fun observeAll(): Flow<List<StreamEntity>>
 
+    /** One-shot read for the predictor, which ranks on a worker thread. */
+    @Query("SELECT * FROM streams ORDER BY addedAt DESC")
+    suspend fun allOnce(): List<StreamEntity>
+
     @Query("SELECT * FROM streams WHERE id = :id LIMIT 1")
     suspend fun findById(id: Long): StreamEntity?
 
@@ -104,10 +108,12 @@ interface StreamDao {
     suspend fun deleteById(id: Long)
 }
 
-@Database(entities = [StreamEntity::class], version = 1, exportSchema = false)
+@Database(entities = [StreamEntity::class, WatchEntity::class], version = 2, exportSchema = false)
 abstract class AppDb : RoomDatabase() {
 
     abstract fun streams(): StreamDao
+
+    abstract fun watchHistory(): WatchDao
 
     companion object {
         private const val DB_NAME = "streambuddy.db"
@@ -121,6 +127,8 @@ abstract class AppDb : RoomDatabase() {
                 AppDb::class.java,
                 DB_NAME,
             )
+                // Pre-1.0: adding the watch-history table bumps the schema to v2. There is no
+                // shipped version to migrate from, so a fresh database is acceptable.
                 .fallbackToDestructiveMigration()
                 .build()
                 .also { instance = it }

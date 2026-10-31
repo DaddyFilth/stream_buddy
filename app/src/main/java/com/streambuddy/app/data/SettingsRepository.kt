@@ -12,6 +12,11 @@ data class AppSettings(
     val prefetchMinutes: Int = DEFAULT_PREFETCH_MINUTES,
     /** `false` pre-caches the lowest-bandwidth variant (data saver), `true` the highest. */
     val preferHighestQuality: Boolean = false,
+    /**
+     * Let the on-device predictor choose *what* gets pre-cached and how deeply. When off, only
+     * streams you explicitly queue are cached, each with the configured window.
+     */
+    val smartPrefetch: Boolean = true,
 ) {
     val prefetchMillis: Long get() = prefetchMinutes * 60_000L
 
@@ -43,6 +48,11 @@ class SettingsRepository private constructor(context: Context) {
         _settings.value = read()
     }
 
+    fun setSmartPrefetch(enabled: Boolean) {
+        prefs.edit { putBoolean(KEY_SMART_PREFETCH, enabled) }
+        _settings.value = read()
+    }
+
     /** True until the app has asked for POST_NOTIFICATIONS once. */
     fun shouldRequestNotificationPermission(): Boolean =
         !prefs.getBoolean(KEY_NOTIFICATIONS_ASKED, false)
@@ -55,6 +65,7 @@ class SettingsRepository private constructor(context: Context) {
         prefetchMinutes = prefs.getInt(KEY_PREFETCH_MINUTES, AppSettings.DEFAULT_PREFETCH_MINUTES)
             .coerceIn(AppSettings.MIN_PREFETCH_MINUTES, AppSettings.MAX_PREFETCH_MINUTES),
         preferHighestQuality = prefs.getBoolean(KEY_HIGHEST_QUALITY, false),
+        smartPrefetch = prefs.getBoolean(KEY_SMART_PREFETCH, true),
     )
 
     companion object {
@@ -62,6 +73,7 @@ class SettingsRepository private constructor(context: Context) {
         private const val KEY_PREFETCH_MINUTES = "prefetch_minutes"
         private const val KEY_HIGHEST_QUALITY = "prefer_highest_quality"
         private const val KEY_NOTIFICATIONS_ASKED = "notifications_asked"
+        private const val KEY_SMART_PREFETCH = "smart_prefetch"
 
         @Volatile
         private var instance: SettingsRepository? = null

@@ -41,6 +41,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.streambuddy.app.ai.Prediction
 import com.streambuddy.app.data.StreamEntity
 import com.streambuddy.app.stream.CacheState
 
@@ -52,6 +53,7 @@ fun QueueScreen(
     modifier: Modifier = Modifier,
 ) {
     val streams by viewModel.streams.collectAsStateWithLifecycle()
+    val predictions by viewModel.predictions.collectAsStateWithLifecycle()
     var url by rememberSaveable { mutableStateOf("") }
     var title by rememberSaveable { mutableStateOf("") }
     var pendingDelete by remember { mutableStateOf<StreamEntity?>(null) }
@@ -62,11 +64,16 @@ fun QueueScreen(
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         item {
-            SectionHeader(
-                title = "Pre-play queue",
-                subtitle = "Add an HLS playlist (.m3u8) or a media file and Stream Buddy caches " +
-                    "the start of it, so playback begins instantly.",
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SectionHeader(
+                    title = "Pre-play queue",
+                    subtitle = "Add an HLS playlist (.m3u8) or a media file and Stream Buddy " +
+                        "caches the start of it, so playback begins instantly.",
+                )
+                predictions.values.maxByOrNull { it.probability }?.let { top ->
+                    SmartPickNote(prediction = top)
+                }
+            }
         }
 
         item {
@@ -118,6 +125,7 @@ fun QueueScreen(
             items(streams, key = { it.id }) { stream ->
                 StreamCard(
                     stream = stream,
+                    prediction = predictions[stream.id],
                     onPlay = { onPlay(stream) },
                     onCache = { viewModel.startCaching(stream) },
                     onCancel = { viewModel.cancelCaching(stream) },
@@ -153,9 +161,32 @@ fun QueueScreen(
     }
 }
 
+/** Banner at the top of the queue explaining the model's current best guess. */
+@Composable
+private fun SmartPickNote(prediction: Prediction) {
+    ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = "Smart pre-cache: “${prediction.candidate.title}”",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = "${prediction.percent}% likely to be your next watch — " +
+                    "cached ahead of time while you're on Wi-Fi.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
 @Composable
 private fun StreamCard(
     stream: StreamEntity,
+    prediction: Prediction?,
     onPlay: () -> Unit,
     onCache: () -> Unit,
     onCancel: () -> Unit,
@@ -206,6 +237,23 @@ private fun StreamCard(
                 state == CacheState.CACHING -> LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+
+            if (prediction != null) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        text = "${prediction.percent}% likely next · on-device model",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    prediction.reasons.firstOrNull()?.let { reason ->
+                        Text(
+                            text = reason.detail,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
             }
 
             stream.error?.let { error ->

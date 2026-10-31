@@ -56,7 +56,12 @@ class PreCacheWorker(
         val stream = dao.findById(streamId) ?: return Result.failure()
 
         val settings = SettingsRepository.get(applicationContext).settings.value
-        val depthMs = stream.prefetchMillis.takeIf { it > 0L } ?: settings.prefetchMillis
+        val requestedDepthMs = inputData.getLong(KEY_DEPTH_MS, NO_DEPTH_MS)
+        val depthMs = when {
+            requestedDepthMs > 0L -> requestedDepthMs
+            stream.prefetchMillis > 0L -> stream.prefetchMillis
+            else -> settings.prefetchMillis
+        }
 
         dao.resetForCaching(streamId, depthMs, CacheState.CACHING.name, now())
         post(stream, progressNotification(stream, "Preparing…", percent = null, indeterminate = true))
@@ -279,15 +284,17 @@ class PreCacheWorker(
 
     companion object {
         private const val KEY_STREAM_ID = "stream_id"
+        private const val KEY_DEPTH_MS = "depth_ms"
         private const val NO_STREAM_ID = -1L
+        private const val NO_DEPTH_MS = 0L
         private const val MAX_ATTEMPTS = 3
         private const val PROGRESS_INTERVAL_MS = 700L
         private const val CHANNEL_ID = "precache_progress"
 
         /** Queues (or restarts) the pre-cache job for [streamId]. */
-        fun enqueue(context: Context, streamId: Long) {
+        fun enqueue(context: Context, streamId: Long, depthMs: Long = 0L) {
             val request = OneTimeWorkRequestBuilder<PreCacheWorker>()
-                .setInputData(workDataOf(KEY_STREAM_ID to streamId))
+                .setInputData(workDataOf(KEY_STREAM_ID to streamId, KEY_DEPTH_MS to depthMs))
                 .setConstraints(
                     Constraints.Builder()
                         .setRequiredNetworkType(NetworkType.CONNECTED)

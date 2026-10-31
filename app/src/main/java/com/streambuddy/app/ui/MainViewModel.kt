@@ -11,10 +11,16 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import com.streambuddy.app.ai.Prediction
+import com.streambuddy.app.ai.WatchEvent
+import com.streambuddy.app.cache.AppScope
 import com.streambuddy.app.cache.CacheManager
 import com.streambuddy.app.cache.PreCacheWorker
+import com.streambuddy.app.cache.SmartPrefetch
+import com.streambuddy.app.cache.SmartPrefetchWorker
 import com.streambuddy.app.data.AppDb
 import com.streambuddy.app.data.AppSettings
+import com.streambuddy.app.data.PredictorRepository
 import com.streambuddy.app.data.SettingsRepository
 import com.streambuddy.app.data.StreamEntity
 import com.streambuddy.app.stream.CacheState
@@ -66,6 +72,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val messages: SharedFlow<String> = _messages.asSharedFlow()
 
+    /** Best guesses for what will be played next, keyed by stream id (empty when smart is off). */
+    private val _predictions = MutableStateFlow<Map<Long, Prediction>>(emptyMap())
+    val predictions: StateFlow<Map<Long, Prediction>> = _predictions.asStateFlow()
+
+    /** Learned-model status for the Settings screen. */
+    val modelState = PredictorRepository.get(app).state
+
+    /** The playback currently being watched, so a session can be recorded when it ends. */
+    private var session: WatchSession? = null
+    private var sessionMaxPositionMs = 0L
+
+    private data class WatchSession(val streamId: Long, val title: String, val startedAtMs: Long)
+
     /**
      * Cache-first player. Every data source request goes through [CacheManager], so audio and video
      * the pre-cache job already fetched play straight from disk and anything missing is fetched and
@@ -86,6 +105,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     _playback.update { it.copy(isBuffering = playbackState == Player.STATE_BUFFERING) }
+                    if (playbackState == Player.STATE_ENDED) finishSession()
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
@@ -101,9 +121,11 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             while (isActive) {
                 if (player.playbackState != Player.STATE_IDLE) {
+                    val position = player.currentPosition.coerceAtLeast(0L)
+                    if (position > sessionMaxPositionMs) sessionMaxPositionMs = position
                     _playback.update {
                         it.copy(
-                            positionMs = player.currentPosition.coerceAtLeast(0L),
+                            positionMs = position,
                             durationMs = player.duration.coerceAtLeast(0L),
                         )
                     }
@@ -113,6 +135,19 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         }
 
         refreshCacheUsage()
+        if (settings.value.smartPrefetch) SmartPrefetchWorker.schedule(app)
+
+        // Re-rank the queue whenever it changes, the settings change, or a session is recorded.
+        viewModelScope.launch {
+            combine(streams, settings) { queue, current -> queue to current }.collect { (queue, current) ->
+                if (current.smartPrefetch && queue.isNotEmpty()) {
+                    val ranked = withContext(Dispatchers.Default) { SmartPrefetch.rankQueue(app) }
+                    _predictions.value = ranked.associateBy { it.candidate.streamId }
+                } else {
+                    _predictions.value = emptyMap()
+                }
+            }
+        }
     }
 
     // region queue
@@ -135,6 +170,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
                     ),
                 )
                 PreCacheWorker.enqueue(app, id)
+                SmartPrefetchWorker.schedule(app)
                 post("Queued “$title” for pre-play")
             }
         }
@@ -187,6 +223,14 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
             }
             .build()
 
+        finishSession()
+        session = WatchSession(
+            streamId = stream.id,
+            title = stream.title,
+            startedAtMs = System.currentTimeMillis(),
+        )
+        sessionMaxPositionMs = 0L
+
         _playback.value = PlaybackUiState(
             streamId = stream.id,
             title = stream.title,
@@ -213,9 +257,42 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     }
 
     fun stopPlayback() {
+        finishSession()
         player.stop()
         player.clearMediaItems()
         _playback.value = PlaybackUiState()
+    }
+
+    /**
+     * Records how much of the current stream was watched and lets the predictor refit.
+     *
+     * This is the only place watch data is produced: a session counts once, either when playback
+     * ends, another stream starts, or the app is closed. Nothing leaves the device.
+     */
+    private fun finishSession() {
+        val current = session ?: return
+        session = null
+        val watchedMs = sessionMaxPositionMs
+        if (watchedMs < MIN_RECORDED_WATCH_MS) return
+
+        val durationMs = player.duration.takeIf { it > 0L } ?: 0L
+        val completed = durationMs > 0L && watchedMs >= (durationMs - COMPLETION_TOLERANCE_MS)
+        val event = WatchEvent(
+            streamId = current.streamId,
+            title = current.title,
+            startedAtMs = current.startedAtMs,
+            watchedMs = watchedMs,
+            durationMs = durationMs,
+            completed = completed,
+        )
+        // Not viewModelScope: this also runs from onCleared, where that scope is already gone.
+        AppScope.io.launch {
+            SmartPrefetch.recordPlayback(app, event)
+            if (_predictions.value.isNotEmpty()) {
+                val ranked = SmartPrefetch.rankQueue(app)
+                _predictions.value = ranked.associateBy { it.candidate.streamId }
+            }
+        }
     }
 
     // endregion
@@ -226,6 +303,26 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     fun setPreferHighestQuality(preferHighestQuality: Boolean) =
         settingsRepository.setPreferHighestQuality(preferHighestQuality)
+
+    fun setSmartPrefetch(enabled: Boolean) {
+        settingsRepository.setSmartPrefetch(enabled)
+        if (enabled) SmartPrefetchWorker.schedule(app) else SmartPrefetchWorker.cancel(app)
+        post(if (enabled) "Smart pre-cache on" else "Smart pre-cache off")
+    }
+
+    /** Runs a prediction pass now instead of waiting for the periodic job. */
+    fun enhanceQueueNow() {
+        SmartPrefetchWorker.runNow(app)
+        post("Looking for what to cache next…")
+    }
+
+    fun resetLearning() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { SmartPrefetch.clearHistory(app) }
+            _predictions.value = emptyMap()
+            post("Watch history cleared; the model starts from scratch")
+        }
+    }
 
     fun refreshCacheUsage() {
         viewModelScope.launch {
@@ -245,6 +342,7 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
     // endregion
 
     override fun onCleared() {
+        finishSession()
         player.release()
         super.onCleared()
     }
@@ -255,5 +353,9 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val POSITION_POLL_MS = 500L
+
+        /** Shorter than this and it was a mis-tap, not a viewing decision. */
+        const val MIN_RECORDED_WATCH_MS = 15_000L
+        const val COMPLETION_TOLERANCE_MS = 10_000L
     }
 }

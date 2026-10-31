@@ -35,6 +35,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.streambuddy.app.BuildConfig
+import com.streambuddy.app.ai.PrefetchPredictor
 import com.streambuddy.app.cache.CacheManager
 import com.streambuddy.app.data.AppSettings
 import com.streambuddy.app.util.Format
@@ -45,8 +46,11 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val cacheBytes by viewModel.cacheBytes.collectAsStateWithLifecycle()
+    val model by viewModel.modelState.collectAsStateWithLifecycle()
+    val predictions by viewModel.predictions.collectAsStateWithLifecycle()
 
     var confirmClear by remember { mutableStateOf(false) }
+    var confirmReset by remember { mutableStateOf(false) }
     var notificationsEnabled by remember {
         mutableStateOf(NotificationManagerCompat.from(context).areNotificationsEnabled())
     }
@@ -71,6 +75,64 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 title = "Settings & boost",
                 subtitle = "Pre-caching is cache-first: everything you play also warms the cache.",
             )
+        }
+
+        item {
+            SettingsSection(title = "Smart pre-cache") {
+                Text(
+                    text = "An on-device model learns from what you actually watch — series, " +
+                        "time of day, how often you finish — and pre-caches the next likely " +
+                        "play. It starts from hand-tuned priors and improves as you use the app.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                LabeledValueRow(
+                    label = "Status",
+                    value = when {
+                        !settings.smartPrefetch -> "Off"
+                        model.model.hasLearnedAnything -> "Personalised"
+                        else -> "Learning"
+                    },
+                    valueColor = if (settings.smartPrefetch) {
+                        MaterialTheme.colorScheme.secondary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                LabeledValueRow(
+                    label = "Playbacks recorded",
+                    value = model.historyCount.toString(),
+                )
+                predictions.values.maxByOrNull { it.probability }?.let { top ->
+                    Text(
+                        text = "Next up: “${top.candidate.title}” (${top.percent}%) — " +
+                            (top.reasons.firstOrNull()?.detail ?: "no strong signal yet"),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (settings.smartPrefetch) {
+                        FilledTonalButton(onClick = { viewModel.setSmartPrefetch(false) }) {
+                            Text("Turn off")
+                        }
+                    } else {
+                        OutlinedButton(onClick = { viewModel.setSmartPrefetch(true) }) {
+                            Text("Turn on")
+                        }
+                    }
+                    TextButton(onClick = viewModel::enhanceQueueNow) { Text("Enhance now") }
+                }
+                if (model.historyCount > 0 || model.model.hasLearnedAnything) {
+                    TextButton(onClick = { confirmReset = true }) { Text("Reset learning") }
+                }
+                Text(
+                    text = "Needs ${PrefetchPredictor.MIN_EVENTS_FOR_TRAINING} playbacks before it " +
+                        "starts adjusting the priors. History stays on this device.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         item {
@@ -224,6 +286,30 @@ fun SettingsScreen(viewModel: MainViewModel, modifier: Modifier = Modifier) {
                 )
             }
         }
+    }
+
+    if (confirmReset) {
+        AlertDialog(
+            onDismissRequest = { confirmReset = false },
+            title = { Text("Reset what was learned?") },
+            text = {
+                Text(
+                    "Deletes the watch history and the learned weights. Pre-caching falls back " +
+                        "to the built-in defaults until it has enough playbacks again.",
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.resetLearning()
+                        confirmReset = false
+                    },
+                ) { Text("Reset") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmReset = false }) { Text("Keep") }
+            },
+        )
     }
 
     if (confirmClear) {
