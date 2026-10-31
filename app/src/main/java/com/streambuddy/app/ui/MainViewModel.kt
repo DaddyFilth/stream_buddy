@@ -288,6 +288,8 @@ class MainViewModel(private val app: Application) : AndroidViewModel(app) {
         // Not viewModelScope: this also runs from onCleared, where that scope is already gone.
         AppScope.io.launch {
             SmartPrefetch.recordPlayback(app, event)
+            // The next pass re-ranks with the fresher history; it stays on its unmetered window.
+            if (settingsRepository.settings.value.smartPrefetch) SmartPrefetchWorker.schedule(app)
             if (_predictions.value.isNotEmpty()) {
                 val ranked = SmartPrefetch.rankQueue(app)
                 _predictions.value = ranked.associateBy { it.candidate.streamId }
