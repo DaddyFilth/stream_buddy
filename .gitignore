@@ -1,0 +1,30 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Android Studio / IntelliJ
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local machine configuration (SDK path, signing info, secrets)
+local.properties
+keystore.properties
+*.jks
+*.keystore
+
+# Build output
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+output-metadata.json
+
+# OS / logs
+.DS_Store
+*.log
+*.hprof
